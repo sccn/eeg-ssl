@@ -125,25 +125,58 @@ class SSLTransform(AbstractTransform):
 
         return samples, np.array(labels)
 
+    def contrastive_predictive_coding(self, data):
+        '''
+        For all steps, raw EEG window is passed through an encoder to get latent representation
+        For each series of Nc contiguously non-overlapping context windows, an autoregressive model is applied to get a context embedding
+        An array of Np contigously non-overlapping windows that follows the context group is used as future (positive) samples
+        For each positive sample, pick a list of Nb negative samples randomly from the data
+        '''
+        
+        # Adopting the (Banville et al, 2020) practice, ...
+        # for each session dataset, get all possible context and future samples pairs. --> Nb+1 pairs
+        # then for each Np future sample, pick negative samples from the other Nb pairs
+        # => Nb is determined by Nc, Np and window size
+        context_windows = []
+        future_windows = []
+        for ti in arange(0, data.shape[1]-self.win*(self.Nc+self.Np), self.win*self.Nc):
+            # ti is the index of the first window in the context array
+            context_windows.append(data[:, np.arange(ti, ti+(self.win*self.Nc), self.win)])
+            future_windows.append(data[:, np.arange(ti+(self.win*self.Nc), i+(self.win*(self.Nc+self.Np)), self.win)])
+        
+        negative_windows = []
+        for i in range(len(future_windows)):
+            negative_windows.append([np.random.choice(arr, replace=False) for arr in future_windows[:i] + future_windows[i+1:]])
+        
+        return list(zip(context_windows, future_windows, negative_windows))
+            
     def transform(self, data, session):
         # data is passed in as element in session array
         # data: K x T x C
         if not os.path.exists(self.cache_dir):
             os.mkdir(self.cache_dir)
-        if not (os.path.exists(f'{self.cache_dir}/{session}_data.npy') or os.path.exists(f'{self.cache_dir}/{session}_label.npy')):
-            if self.method == "RP":
-                data, labels = self.relative_positioning(data)
-            if self.method == "TS":
-                data, labels = self.temporal_shuffling(data)
+        if self.method == "CPC":
+            if not os.path.exists(f'{self.cache_dir}/{session}_data.npy'):
+                samples = self.contrastive_prective_coding(data)
+                np.save(f'{self.cache_dir}/{session}_data', samples)
+            else:
+                samples = np.load(f'{self.cache_dir}/{session}_data.npy', allow_pickle=True) 
+            return samples
+        else
+            if not (os.path.exists(f'{self.cache_dir}/{session}_data.npy') or os.path.exists(f'{self.cache_dir}/{session}_label.npy')):
+                if self.method == "RP":
+                    data, labels = self.relative_positioning(data)
+                if self.method == "TS":
+                    data, labels = self.temporal_shuffling(data)
 
-            # data: S x W x K x T x C (nsample x nwindows/sample x channel x time)
-            np.save(f'{self.cache_dir}/{session}_data', data)
-            np.save(f'{self.cache_dir}/{session}_label', labels)
-        else:
-            data = np.load(f'{self.cache_dir}/{session}_data.npy', allow_pickle=True)
-            labels = np.load(f'{self.cache_dir}/{session}_label.npy', allow_pickle=True)
+                # data: S x W x K x T x C (nsample x nwindows/sample x channel x time)
+                np.save(f'{self.cache_dir}/{session}_data', data)
+                np.save(f'{self.cache_dir}/{session}_label', labels)
+            else:
+                data = np.load(f'{self.cache_dir}/{session}_data.npy', allow_pickle=True)
+                labels = np.load(f'{self.cache_dir}/{session}_label.npy', allow_pickle=True)
 
-        return data, labels
+            return data, labels
 
     def aggregate(self, transformed):
         '''
