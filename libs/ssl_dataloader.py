@@ -1,19 +1,15 @@
 import os
 
-import mne
 import numpy as np
-import scipy
-from sklearn.preprocessing import MinMaxScaler
+import scipy.io
 import torch
-import torchvision.models as torchmodels
 from tqdm import tqdm
-from matplotlib import pyplot as plt
 
 from abc import ABC, abstractmethod
 
-class BIDSTransform(ABC):
+class AbstractTransform(ABC):
     def __init__(self, x_params):
-        self.SFREQ = 256
+        self.SFREQ = x_params['sfreq']
 
     @property
     @abstractmethod
@@ -28,13 +24,14 @@ class BIDSTransform(ABC):
         """
         pass
 
-class SSLTransform(BIDSTransform):
+class SSLTransform(AbstractTransform):
+    data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
 
     def __init__(self, x_params):
         """
         @param dict x_params {
                 method: str | "TS"
-                window: int | self.SFREQ
+                win: int | self.SFREQ
                 stride: int | self.SFREQ/2
                 tau_pos: int | self.SFREQ*3
                 tau_neg: int | self.SFREQ*3
@@ -42,38 +39,49 @@ class SSLTransform(BIDSTransform):
             }
         """
         super().__init__(x_params)
-        self.method = x_params["method"] if "method" in x_params else "TS" # default to temporal shuffling
-        self.window = self.SFREQ if x_params["window"] < 1 else x_params["window"]
-        self.stride = self.SFREQ/2 if self.window < 1 else x_params["stride"]
-        self.tau_pos = x_params["tau_pos"] if "tau_pos" in x_params else self.window*3 # arbitrary default
-        self.tau_neg = x_params["tau_neg"] if "tau_neg" in x_params else self.window*3 # arbitray default
-        self.n_samples = x_params["n_samples"] if "n_samples" in x_params else 2 # arbitrary default
-        self.seed = x_params["seed"]
-        np.random.seed(self.seed)
+
+        default_params = {
+            "method": "RP",
+            "cache_dir": "/expanse/projects/nemar/dtyoung/eeg-ssl/cache",
+            "win": self.SFREQ,
+            "stride": self.SFREQ/2,
+            "tau_pos": self.SFREQ*3,
+            "tau_neg": self.SFREQ*3,
+            "n_samples": 1,
+            "seed": 0
+        }
+
+        default_params.update(x_params)
+        for k,v in default_params.items():
+            setattr(self, k, v)
+
+        # validity check of inputs
+        if self.stride > self.tau_pos:
+            raise ValueError('Stride should not be larger than positive window size')
+
+        if self.method == "TS" and self.tau_pos < self.win*3:
+            raise ValueError('Temporal shuffling requires positive context to be at least 3 times window size')
 
     def relative_positioning(self, data):
         '''
         For each n_samples, get the anchor window,
         then choose corresponding positive windows (ones whose onsets is less then tau_pos from anchor start)
         and corresponding negative windows (ones whose onsets is larger than tau_neg from anchor_start)
-        @parameters
-            data: F x T x Ch
         '''
         samples = []
         labels = []
-        data = np.array([data[k] for k in self.data_keys]) # stack all frequency bands
 
-        for anchor_start in np.arange(0, data.shape[1], self.window): # non-overlapping anchor window
-            pos_winds_start = np.arange(anchor_start, np.minimum(anchor_start+self.tau_pos, data.shape[1]-self.window), self.stride) # valid positive samples onsets
+        for anchor_start in np.arange(0, data.shape[1], self.win): # non-overlapping anchor window
+            pos_winds_start = np.arange(anchor_start+self.stride, np.minimum(anchor_start+self.tau_pos, data.shape[1]-self.win), self.stride) # valid positive samples onsets
             if len(pos_winds_start) > 0:
-                pos_winds = [data[:, sample_start:sample_start+self.window,:] for sample_start in np.random.choice(pos_winds_start, self.n_samples, replace=False)]
-                anchors = [data[:,anchor_start:anchor_start+self.window,:] for i in range(len(pos_winds))] # repeat same anchor window
+                pos_winds = [data[:, sample_start:sample_start+self.win] for sample_start in np.random.choice(pos_winds_start, self.n_samples, replace=False)]
+                anchors = [data[:,anchor_start:anchor_start+self.win] for i in range(len(pos_winds))] # repeat same anchor window
                 samples.extend([np.array([anchors[i], pos_winds[i]]) for i in range(len(anchors))]) # if anchors[i].shape == pos_winds[i].shape])
                 labels.extend(np.ones(len(anchors)))
 
                 # for negative windows, want both sides of anchor window
-                neg_winds_start = np.concatenate((np.arange(0, anchor_start-self.tau_neg-self.window, self.stride), np.arange(anchor_start+self.tau_neg, data.shape[1]-self.window, self.stride)))
-                neg_winds = np.array([data[:,sample_start:sample_start+self.window,:] for sample_start in np.random.choice(neg_winds_start, self.n_samples, replace=False)])
+                neg_winds_start = np.concatenate((np.arange(0, anchor_start-self.tau_neg-self.win, self.stride), np.arange(anchor_start+self.tau_neg, data.shape[1]-self.win, self.stride)))
+                neg_winds = np.array([data[:,sample_start:sample_start+self.win] for sample_start in np.random.choice(neg_winds_start, self.n_samples, replace=False)])
                 samples.extend([np.array([anchors[i], neg_winds[i]]) for i in range(len(anchors))]) # if anchors[i].shape == neg_winds[i].shape])
                 labels.extend(np.zeros(len(anchors)))
 
@@ -95,21 +103,21 @@ class SSLTransform(BIDSTransform):
         # And we'll also randomly pick one window in the negative context to form a disordered group
         samples = []
         labels = []
-        data = np.array([data[k] for k in self.data_keys]) # stack all frequency bands
 
         tau_pos = self.tau_pos
         for pos_start in np.arange(0, data.shape[1], tau_pos): # non-overlapping positive contexts
-            pos_winds = [data[:, pos_start:pos_start+self.window,:], data[:, pos_start+self.window*2:pos_start+self.window*3,:]] # two positive windows,
-            inorder = np.array(pos_winds[:1] + [data[:, pos_start+self.window:pos_start+self.window*2,:]] + pos_winds[1:])
-            samples.extend([inorder, np.flip(inorder).copy()])
-            labels.extend(np.ones(2))
+            if pos_start + tau_pos < data.shape[1]:
+                pos_winds = [data[:, pos_start:pos_start+self.win], data[:, pos_start+self.win*2:pos_start+self.win*3]] # two positive windows
+                inorder = np.array(pos_winds[:1] + [data[:, pos_start+self.win:pos_start+self.win*2]] + pos_winds[1:])
+                samples.extend([inorder, np.flip(inorder).copy()])
+                labels.extend(np.ones(2))
 
-            # for negative windows, want both sides of anchor window
-            neg_winds_start = np.concatenate((np.arange(0, pos_start-self.tau_neg-self.window, self.stride), np.arange(pos_start+tau_pos+self.tau_neg, data.shape[1]-self.window, self.stride)))
-            selected_neg_start = np.random.choice(neg_winds_start, 1, replace=False)[0]
-            disorder = np.array(pos_winds[:1] + [data[:,selected_neg_start:selected_neg_start+self.window,:]] + pos_winds[1:]) # two positive windows, disorder sample added to the end
-            samples.extend([disorder, np.flip(disorder).copy()])
-            labels.extend(np.zeros(2))
+                # for negative windows, want both sides of anchor window
+                neg_winds_start = np.concatenate((np.arange(0, pos_start-self.tau_neg-self.win, self.stride), np.arange(pos_start+tau_pos+self.tau_neg, data.shape[1]-self.win, self.stride)))
+                selected_neg_start = np.random.choice(neg_winds_start, 1, replace=False)[0]
+                disorder = np.array(pos_winds[:1] + [data[:,selected_neg_start:selected_neg_start+self.win]] + pos_winds[1:]) # two positive windows, disorder sample added to the end
+                samples.extend([disorder, np.flip(disorder).copy()])
+                labels.extend(np.zeros(2))
 
         samples = np.stack(samples)
         if len(samples) != len(labels):
@@ -117,44 +125,54 @@ class SSLTransform(BIDSTransform):
 
         return samples, np.array(labels)
 
-    def transform(self, data):
+    def transform(self, data, session):
         # data is passed in as element in session array
         # data: K x T x C
-        if self.method == "RP":
-            data, labels = self.relative_positioning(data)
-        if self.method == "TS":
-            data, labels = self.temporal_shuffling(data)
+        if not os.path.exists(self.cache_dir):
+            os.mkdir(self.cache_dir)
+        if not (os.path.exists(f'{self.cache_dir}/{session}_data.npy') or os.path.exists(f'{self.cache_dir}/{session}_label.npy')):
+            if self.method == "RP":
+                data, labels = self.relative_positioning(data)
+            if self.method == "TS":
+                data, labels = self.temporal_shuffling(data)
 
-        # data: S x P x K x T x C
-        # map back to topo
-        samples = []
-        for i in range(data.shape[0]):
-            tup = []
-            for p in range(data.shape[1]):
-                s = {}
-                for k in range(data.shape[2]):
-                    s[self.data_keys[k]] = data[i, p, k, :, :]
-                feat_tensor = torch.tensor(self.generate_network_feat(s),
-                    dtype=torch.float,
-                    device="cuda" if torch.cuda.is_available() else "cpu") # T F
-                feat_tensor = feat_tensor.transpose(1,3)
-                feat_tensor = torch.nn.functional.interpolate(feat_tensor, size=(224,224))
-                feat_tensor = torch.squeeze(feat_tensor)
-                tup.append(feat_tensor)
-            samples.append(tup)
+            # data: S x W x K x T x C (nsample x nwindows/sample x channel x time)
+            np.save(f'{self.cache_dir}/{session}_data', data)
+            np.save(f'{self.cache_dir}/{session}_label', labels)
+        else:
+            data = np.load(f'{self.cache_dir}/{session}_data.npy', allow_pickle=True)
+            labels = np.load(f'{self.cache_dir}/{session}_label.npy', allow_pickle=True)
 
-        data = samples
         return data, labels
 
-class SSLDataset(torch.utils.data.Dataset):
-    SFREQ = 256
+    def aggregate(self, transformed):
+        '''
+        Receive an array of SSL-transformed session data and aggregate them
+        @parameters:
+            transformed: array of SSL-transformed sessions data
+        '''
+        nchans = 62
+        data = np.concatenate([transformed[i][0][:,:,0:nchans,:] for i in range(len(transformed))])
+        y_data = np.concatenate([transformed[i][1] for i in range(len(transformed))])
+
+        # shuffle data
+        shuffle_idxs = np.random.permutation(len(data))
+        data = data[shuffle_idxs]
+        y_data = y_data[shuffle_idxs]
+
+        if len(data) != len(y_data):
+            raise Exception('Mismatch between number of samples and labels')
+
+        return data, y_data
+
+
+class BIDSDataset(torch.utils.data.Dataset):
+    SFREQ = 160
 
     def __init__(self,
-            data_dir='/expanse/projects/nemar/dtyoung/eeg-ssl/data/ds004362_raw', # location of asr cleaned data bundled with markers and channels
+            data_dir='/expanse/projects/nemar/dtyoung/eeg-ssl/ds004362', # location of asr cleaned data 
             sessions:list=None,                                       # sessions to use, default to all
             n_sessions=None,                                          # number of sessions to pick, default all
-            y_mode="bimodal", # {ordinal, split, bimodal}             # y to return (filtered on only first y_key) - ordinal: full range, split: <5 & >5, bimodal: <=3, >=7
-            y_keys=["feltVlnc"],                                      # feltVlnc, feltArsl, feltCtrl, feltPred
             x_params={
                 "feature": "SSLTransform",                    #
                 "window": -1,                                         # number of samples to average over (-1: full session)
@@ -189,6 +207,8 @@ class SSLDataset(torch.utils.data.Dataset):
                 self.sessions = self.sessions[self.n_cv[0]*split_size:(self.n_cv[0]+1)*split_size]
 
         # Instantiate transformer
+        if "sfreq" not in x_params:
+            x_params['sfreq'] = self.SFREQ
         self.x_params = x_params
         if type(x_params["feature"]) is str:
             try:
@@ -201,6 +221,7 @@ class SSLDataset(torch.utils.data.Dataset):
 
         # Preload data
         raw_data = [self.__preload_raw(session) for session in tqdm(self.sessions)]
+
         # Transform data (populates self.data and self.ch_names). Note: this modifies input data.
         self.__transform_raw(raw_data)
 
@@ -208,39 +229,22 @@ class SSLDataset(torch.utils.data.Dataset):
     def __preload_raw(self, session):
         # print(f"Preloading {session}...")
         mat_data = scipy.io.loadmat(os.path.join(self.basedir, session))
-        # only keep relevant keys
-        mat_data = {k: v for k,v in mat_data.items() if (hasattr(self, "y_keys") and k in self.y_keys) or k == "ch_names" or k in self.x_transformer.data_keys}
+        mat_data = mat_data['data']
         return mat_data
 
     def __transform_raw(self, data):
-        # Transform channels to be consistent across sessions
-        self.ch_names = self.x_transformer.info['ch_names']
-        for n_session in range(len(data)):
-            session_ch_names = [ch.strip() for ch in data[n_session]['ch_names']] # matlab forces fixed len str
-            ch_order = [session_ch_names.index(i) for i in self.ch_names]
-            for k in self.x_transformer.data_keys:
-                data[n_session][k] = data[n_session][k][:, ch_order] # T Ch
-
         # Transform to feature space
-        transformed = [self.x_transformer.transform(d) for d in tqdm(data)] # S T F..
+        transformed = [self.x_transformer.transform(d, self.sessions[idx]) for idx, d in enumerate(tqdm(data))] # S T F..
 
-        self.data = transformed[0][0]
-        self.y_data = transformed[0][1]
-        for d in range(1, len(transformed)):
-            self.data   = np.concatenate([self.data, transformed[d][0]])
-            self.y_data = np.concatenate([self.y_data, transformed[d][1]])
-
-        # shuffle data
-        p = np.random.permutation(len(self.data))
-        self.data = [self.data[i] for i in p]
-        self.y_data = [self.y_data[i] for i in p]
-
-        if len(self.data) != len(self.y_data):
-            raise Exception('Mismatch between number of samples and labels')
+        self.data, self.y_data = self.x_transformer.aggregate(transformed)
 
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return self.data[idx], self.y_data[idx]
+        data = self.data[idx]
+        # data = torch.stack(data)
+        return data, self.y_data[idx]
+
+
