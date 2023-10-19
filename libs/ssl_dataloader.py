@@ -2,53 +2,37 @@ import os
 
 import numpy as np
 import scipy.io
+import mne
 import torch
 from tqdm import tqdm
-
+import hashlib
 from abc import ABC, abstractmethod
 
-class AbstractTransform(ABC):
-    def __init__(self, x_params):
-        self.SFREQ = x_params['sfreq']
-
-    @property
-    @abstractmethod
-    def data_keys(self):
-        pass
-
-    @abstractmethod
-    def transform(self, data):
-        """
-        @param dict data
-        @return np.array - time x features
-        """
-        pass
-
-class SSLTransform(AbstractTransform):
-    data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
-
+class SSLTransform(ABC):
     def __init__(self, x_params):
         """
         @param dict x_params {
-                method: str | "TS"
+                sfreq: int 
+                cache_dir: str
                 win: int | self.SFREQ
                 stride: int | self.SFREQ/2
                 tau_pos: int | self.SFREQ*3
                 tau_neg: int | self.SFREQ*3
-                n_samples: int | 2
+                n_samples: int | 1
+                seed: int | 0
+                isResume: bool | True
             }
         """
-        super().__init__(x_params)
-
+        self.SFREQ = x_params['sfreq']
         default_params = {
-            "method": "RP",
-            "cache_dir": "/expanse/projects/nemar/dtyoung/eeg-ssl/cache",
+            "cache_dir": '/expanse/projects/nemar/dtyoung/eeg-ssl/childmind-rest-cache',
             "win": self.SFREQ,
             "stride": self.SFREQ/2,
-            "tau_pos": self.SFREQ*3,
-            "tau_neg": self.SFREQ*3,
+            "tau_pos": int(self.SFREQ*3),
+            "tau_neg": int(self.SFREQ*3),
             "n_samples": 1,
-            "seed": 0
+            "seed": 0,
+            "isResume": True
         }
 
         default_params.update(x_params)
@@ -59,28 +43,108 @@ class SSLTransform(AbstractTransform):
         if self.stride > self.tau_pos:
             raise ValueError('Stride should not be larger than positive window size')
 
-        if self.method == "TS" and self.tau_pos < self.win*3:
-            raise ValueError('Temporal shuffling requires positive context to be at least 3 times window size')
+    @property
+    @abstractmethod
+    def data_keys(self):
+        pass
 
-    def relative_positioning(self, data):
+    @abstractmethod
+    def transform(self, data, key):
+        """
+        @param dict data
+        @param str key   - unique key for caching
+        @return np.array - time x features
+        """
+        pass
+    
+    def hash_key(self, key):
+        hash_object = hashlib.sha256()
+        hash_object.update(bytes(key, 'utf-8'))
+
+        # Calculate the hash (digest)
+        hash_result = hash_object.digest()
+
+        return hash_result.hex() # the hash result (in hexadecimal format)
+    
+    def retrieve_cache(self, key):
+        data_hash = self.hash_key(key)
+        if self.isResume and os.path.exists(f'{self.cache_dir}/{self.method}_{data_hash}.npy'):
+            print('Retrieve cache')
+            samples = np.load(f'{self.cache_dir}/{self.method}_{data_hash}.npy', allow_pickle=True) 
+            return samples
+        else:
+            return np.empty(0)
+
+    def cache_data(self, data, key):
+        data_hash = self.hash_key(key)
+        if not os.path.exists(self.cache_dir):
+            os.mkdir(self.cache_dir)
+        np.save(f'{self.cache_dir}/{self.method}_{data_hash}.npy', data)
+
+    def aggregate(self, transformed):
+        '''
+        Receive an array of SSL-transformed subject data and aggregate them
+        @parameters:
+            transformed: array of SSL-transformed subjects data
+        '''
+        nchans = 62
+        data = np.concatenate([transformed[i][0][:,:,0:nchans,:] for i in range(len(transformed))])
+        y_data = np.concatenate([transformed[i][1] for i in range(len(transformed))])
+
+        # shuffle data
+        shuffle_idxs = np.random.permutation(len(data))
+        data = data[shuffle_idxs]
+        y_data = y_data[shuffle_idxs]
+
+        if len(data) != len(y_data):
+            raise Exception('Mismatch between number of samples and labels')
+
+        return data, y_data
+
+
+class RelativePositioning(SSLTransform):
+    data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
+
+    def __init__(self, x_params):
+        super().__init__(x_params)
+        self.method = "RP"
+
+    def transform(self, data, key):
         '''
         For each n_samples, get the anchor window,
         then choose corresponding positive windows (ones whose onsets is less then tau_pos from anchor start)
         and corresponding negative windows (ones whose onsets is larger than tau_neg from anchor_start)
         '''
+        samples = self.retrieve_cache(key)
+        if np.any(samples):
+            return samples
+
         samples = []
         labels = []
 
         for anchor_start in np.arange(0, data.shape[1], self.win): # non-overlapping anchor window
-            pos_winds_start = np.arange(anchor_start+self.stride, np.minimum(anchor_start+self.tau_pos, data.shape[1]-self.win), self.stride) # valid positive samples onsets
+            # Positive window start t_pos:
+            #     - |t_pos - t_anchor| <= tau_pos
+            #           <-> t_pos <= tau_pos + t_anchor
+            #           <-> t_pos => t_anchor - tau_pos
+            #     - t_pos < T - win
+            #.    - t_pos > 0            
+            pos_winds_start = np.arange(np.maximum(0, anchor_start - self.tau_pos), np.minimum(anchor_start+self.tau_pos, data.shape[1]-self.win), self.win) # valid positive samples onsets
             if len(pos_winds_start) > 0:
+                # positive context                
                 pos_winds = [data[:, sample_start:sample_start+self.win] for sample_start in np.random.choice(pos_winds_start, self.n_samples, replace=False)]
                 anchors = [data[:,anchor_start:anchor_start+self.win] for i in range(len(pos_winds))] # repeat same anchor window
                 samples.extend([np.array([anchors[i], pos_winds[i]]) for i in range(len(anchors))]) # if anchors[i].shape == pos_winds[i].shape])
                 labels.extend(np.ones(len(anchors)))
 
-                # for negative windows, want both sides of anchor window
-                neg_winds_start = np.concatenate((np.arange(0, anchor_start-self.tau_neg-self.win, self.stride), np.arange(anchor_start+self.tau_neg, data.shape[1]-self.win, self.stride)))
+                # negative context
+                # Negative window start t_neg:
+                #     - |t_neg - t_anchor| > tau_neg
+                #           <-> t_neg > tau_neg + t_anchor
+                #           <-> t_neg < t_anchor - tau_neg
+                #     - t_neg < T - win
+                #.    - t_neg > 0
+                neg_winds_start = np.concatenate((np.arange(0, anchor_start-self.tau_neg, self.win), np.arange(anchor_start+self.tau_neg, data.shape[1]-self.win, self.win)))
                 neg_winds = np.array([data[:,sample_start:sample_start+self.win] for sample_start in np.random.choice(neg_winds_start, self.n_samples, replace=False)])
                 samples.extend([np.array([anchors[i], neg_winds[i]]) for i in range(len(anchors))]) # if anchors[i].shape == neg_winds[i].shape])
                 labels.extend(np.zeros(len(anchors)))
@@ -88,15 +152,30 @@ class SSLTransform(AbstractTransform):
         samples = np.stack(samples)
         if len(samples) != len(labels):
             raise ValueError('Number of samples and labels mismatch')
+
+        self.cache_data(samples, key)
         return samples, np.array(labels)
 
-    def temporal_shuffling(self, data):
+class TemporalShuffling(SSLTransform):
+    data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
+
+    def __init__(self, x_params):
+        super().__init__(x_params)
+        self.method = "TS"
+
+        if self.tau_pos < self.win*3:
+            raise ValueError('Temporal shuffling requires positive context to be at least 3 times window size')
+
+    def transform(self, data, key):
         '''
         Pick two samples from positive context
         Pick another sample either from positive context in between previous two (--> y = 1 (in-order)), or from negative context (--> y = 0 (disordered))
         Sample size is increased by switching positive samples
         x order: (pos_sample_left, in/dis-order_sample, pos_sample_right)
         '''
+        samples = self.retrieve_cache(key)
+        if samples:
+            return samples
 
         # Our assumption will be the positive context will always be 3*window size.
         # Thus we'll have 3 consecutive windows extracted from positive context (in-order group)
@@ -125,16 +204,26 @@ class SSLTransform(AbstractTransform):
 
         return samples, np.array(labels)
 
-    def contrastive_predictive_coding(self, data):
+class CPC(SSLTransform):
+    data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
+
+    def __init__(self, x_params):
+        super().__init__(x_params)
+        self.method = "CPC"
+
+    def transform(self, data, key):
         '''
         For all steps, raw EEG window is passed through an encoder to get latent representation
         For each series of Nc contiguously non-overlapping context windows, an autoregressive model is applied to get a context embedding
         An array of Np contigously non-overlapping windows that follows the context group is used as future (positive) samples
         For each positive sample, pick a list of Nb negative samples randomly from the data
         '''
-        
+        samples = self.retrieve_cache(key)
+        if samples:
+            return samples
+
         # Adopting the (Banville et al, 2020) practice, ...
-        # for each session dataset, get all possible context and future samples pairs. --> Nb+1 pairs
+        # for each subject dataset, get all possible context and future samples pairs. --> Nb+1 pairs
         # then for each Np future sample, pick negative samples from the other Nb pairs
         # => Nb is determined by Nc, Np and window size
         context_windows = []
@@ -149,95 +238,54 @@ class SSLTransform(AbstractTransform):
             negative_windows.append([np.random.choice(arr, replace=False) for arr in future_windows[:i] + future_windows[i+1:]])
         
         return list(zip(context_windows, future_windows, negative_windows))
-            
-    def transform(self, data, session):
-        # data is passed in as element in session array
-        # data: K x T x C
-        if not os.path.exists(self.cache_dir):
-            os.mkdir(self.cache_dir)
-        if self.method == "CPC":
-            if not os.path.exists(f'{self.cache_dir}/{session}_data.npy'):
-                samples = self.contrastive_prective_coding(data)
-                np.save(f'{self.cache_dir}/{session}_data', samples)
-            else:
-                samples = np.load(f'{self.cache_dir}/{session}_data.npy', allow_pickle=True) 
-            return samples
-        else
-            if not (os.path.exists(f'{self.cache_dir}/{session}_data.npy') or os.path.exists(f'{self.cache_dir}/{session}_label.npy')):
-                if self.method == "RP":
-                    data, labels = self.relative_positioning(data)
-                if self.method == "TS":
-                    data, labels = self.temporal_shuffling(data)
 
-                # data: S x W x K x T x C (nsample x nwindows/sample x channel x time)
-                np.save(f'{self.cache_dir}/{session}_data', data)
-                np.save(f'{self.cache_dir}/{session}_label', labels)
-            else:
-                data = np.load(f'{self.cache_dir}/{session}_data.npy', allow_pickle=True)
-                labels = np.load(f'{self.cache_dir}/{session}_label.npy', allow_pickle=True)
-
-            return data, labels
-
-    def aggregate(self, transformed):
-        '''
-        Receive an array of SSL-transformed session data and aggregate them
-        @parameters:
-            transformed: array of SSL-transformed sessions data
-        '''
-        nchans = 62
-        data = np.concatenate([transformed[i][0][:,:,0:nchans,:] for i in range(len(transformed))])
-        y_data = np.concatenate([transformed[i][1] for i in range(len(transformed))])
-
-        # shuffle data
-        shuffle_idxs = np.random.permutation(len(data))
-        data = data[shuffle_idxs]
-        y_data = y_data[shuffle_idxs]
-
-        if len(data) != len(y_data):
-            raise Exception('Mismatch between number of samples and labels')
-
-        return data, y_data
-
-
-class BIDSDataset(torch.utils.data.Dataset):
-    SFREQ = 160
+class ChildmindSSLDataset(torch.utils.data.Dataset):
+    SFREQ = 128
 
     def __init__(self,
-            data_dir='/expanse/projects/nemar/dtyoung/eeg-ssl/ds004362', # location of asr cleaned data 
-            sessions:list=None,                                       # sessions to use, default to all
-            n_sessions=None,                                          # number of sessions to pick, default all
+            data_dir='/expanse/projects/nemar/dtyoung/eeg-ssl/childmind-rest', # location of asr cleaned data 
+            subjects:list=None,                                       # subjects to use, default to all
+            n_subjects=None,                                          # number of subjects to pick, default all
             x_params={
-                "feature": "SSLTransform",                    #
-                "window": -1,                                         # number of samples to average over (-1: full session)
+                "feature": "RelativePositioning",                    #
+                "window": -1,                                         # number of samples to average over (-1: full subject)
                 "stride": 1,                                          # number of samples to stride window by (does nothing when window = -1)
             },
-            balanced=False,                                           # within k-cv only; enforce class balance y_mode (only for split and bimodal); only on first y_key
             n_cv=None,                                                # (k,folds) Use this to control train vs test; independent of seed
             is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
             seed=None):                                               # numpy random seed
         np.random.seed(seed)
         self.basedir = data_dir
-        self.sessions = [i.split('.')[0] for i in os.listdir(self.basedir) if i.split('.')[-1] == 'mat']
-        if sessions != None:
-            self.sessions = [i for i in sessions if i in self.sessions]
-            if len(sessions) - len(self.sessions) > 0:
-                print("Warning: unknown keys present in user specified sessions")
-        np.random.shuffle(self.sessions)
-        n_sessions = n_sessions if n_sessions is not None else len(self.sessions)
-        if n_sessions > len(self.sessions):
-            print("Warning: n_sessions cannot be larger than sessions")
-        self.sessions = self.sessions[:n_sessions]
+        self.files = np.array([i for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
+        self.subjects = np.array([i.split('_')[0] for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
+        if subjects != None:
+            subjects = [i for i in subjects if i in self.subjects]
+            selected_indices = [subjects.index(i) for i in subjects if i in self.subjects]
+            self.subjects = np.array(subjects)[selected_indices]
+            self.files = self.files[selected_indices]
+            if len(subjects) - len(self.subjects) > 0:
+                print("Warning: unknown keys present in user specified subjects")
+        shuffling_indices = list(range(len(self.subjects)))
+        np.random.shuffle(shuffling_indices)
+        self.subjects = self.subjects[shuffling_indices]
+        self.files = self.files[shuffling_indices]
+
+        n_subjects = n_subjects if n_subjects is not None else len(self.subjects)
+        if n_subjects > len(self.subjects):
+            print("Warning: n_subjects cannot be larger than subjects")
+        self.subjects = self.subjects[:n_subjects]
+        self.files = self.files[:n_subjects]
 
         # Split Train-Test
         self.n_cv = n_cv
         self.is_test = is_test
         if self.n_cv is not None:
-            split_size = int(n_sessions / self.n_cv[1])
+            split_size = int(n_subjects / self.n_cv[1])
             if not self.is_test:
-                self.sessions = self.sessions[:self.n_cv[0]*split_size] + \
-                                self.sessions[(self.n_cv[0]+1)*split_size:]
+                self.subjects = self.subjects[:self.n_cv[0]*split_size] + \
+                                self.subjects[(self.n_cv[0]+1)*split_size:]
             else:
-                self.sessions = self.sessions[self.n_cv[0]*split_size:(self.n_cv[0]+1)*split_size]
+                self.subjects = self.subjects[self.n_cv[0]*split_size:(self.n_cv[0]+1)*split_size]
 
         # Instantiate transformer
         if "sfreq" not in x_params:
@@ -252,24 +300,31 @@ class BIDSDataset(torch.utils.data.Dataset):
             transformer_cls = x_params["feature"]
         self.x_transformer = transformer_cls(self.x_params)
 
+        # Process data
+        self.data = [self.__process_data(i) for i in tqdm(self.files)]
         # Preload data
-        raw_data = [self.__preload_raw(session) for session in tqdm(self.sessions)]
+        # raw_data = [self.__preload_raw(f) for f in tqdm(self.files)]
 
         # Transform data (populates self.data and self.ch_names). Note: this modifies input data.
-        self.__transform_raw(raw_data)
+        # self.__transform_raw(raw_data)
 
+    def __process_data(self, raw_file):
+        raw_data = self.__preload_raw(raw_file)
+        data = self.__transform_raw(raw_data, raw_file)
+        return data
 
-    def __preload_raw(self, session):
-        # print(f"Preloading {session}...")
-        mat_data = scipy.io.loadmat(os.path.join(self.basedir, session))
-        mat_data = mat_data['data']
+    def __preload_raw(self, raw_file):
+        # print(f"Preloading {subject}...")
+        EEG = mne.io.read_raw_eeglab(os.path.join(self.basedir, raw_file), preload=True)
+        mat_data = EEG.get_data()
         return mat_data
 
-    def __transform_raw(self, data):
-        # Transform to feature space
-        transformed = [self.x_transformer.transform(d, self.sessions[idx]) for idx, d in enumerate(tqdm(data))] # S T F..
+    def __transform_raw(self, data, key):
+        return self.x_transformer.transform(data, key)
+        # # Transform to feature space
+        # transformed = [self.x_transformer.transform(d, self.subjects[idx]) for idx, d in enumerate(tqdm(data))] # S T F..
 
-        self.data, self.y_data = self.x_transformer.aggregate(transformed)
+        # self.data, self.y_data = self.x_transformer.aggregate(transformed)
 
 
     def __len__(self):
