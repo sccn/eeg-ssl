@@ -7,6 +7,7 @@ import torch
 from tqdm import tqdm
 import hashlib
 from abc import ABC, abstractmethod
+import pickle
 
 class SSLTransform(ABC):
     def __init__(self, x_params):
@@ -68,38 +69,24 @@ class SSLTransform(ABC):
     
     def retrieve_cache(self, key):
         data_hash = self.hash_key(key)
-        if self.isResume and os.path.exists(f'{self.cache_dir}/{self.method}_{data_hash}.npy'):
+        if self.isResume and os.path.exists(f'{self.cache_dir}/{self.method}_{data_hash}.pkl'):
             print('Retrieve cache')
-            samples = np.load(f'{self.cache_dir}/{self.method}_{data_hash}.npy', allow_pickle=True) 
-            return samples
+            cache_file = f'{self.cache_dir}/{self.method}_{data_hash}.pkl'
+            with open(cache_file, 'rb') as fin:
+                saved_data = pickle.load(fin) 
+            samples = saved_data['data']
+            labels = saved_data['labels']
+            return samples, labels
         else:
-            return np.empty(0)
+            return np.empty(0), np.empty(0)
 
-    def cache_data(self, data, key):
+    def cache_data(self, data, labels, key):
         data_hash = self.hash_key(key)
         if not os.path.exists(self.cache_dir):
             os.mkdir(self.cache_dir)
-        np.save(f'{self.cache_dir}/{self.method}_{data_hash}.npy', data)
-
-    def aggregate(self, transformed):
-        '''
-        Receive an array of SSL-transformed subject data and aggregate them
-        @parameters:
-            transformed: array of SSL-transformed subjects data
-        '''
-        nchans = 62
-        data = np.concatenate([transformed[i][0][:,:,0:nchans,:] for i in range(len(transformed))])
-        y_data = np.concatenate([transformed[i][1] for i in range(len(transformed))])
-
-        # shuffle data
-        shuffle_idxs = np.random.permutation(len(data))
-        data = data[shuffle_idxs]
-        y_data = y_data[shuffle_idxs]
-
-        if len(data) != len(y_data):
-            raise Exception('Mismatch between number of samples and labels')
-
-        return data, y_data
+        cache_file = f'{self.cache_dir}/{self.method}_{data_hash}.pkl' 
+        with open(cache_file, 'wb') as fout:
+            pickle.dump({'data': data, 'labels': labels}, fout)
 
 
 class RelativePositioning(SSLTransform):
@@ -114,15 +101,21 @@ class RelativePositioning(SSLTransform):
         For each n_samples, get the anchor window,
         then choose corresponding positive windows (ones whose onsets is less then tau_pos from anchor start)
         and corresponding negative windows (ones whose onsets is larger than tau_neg from anchor_start)
+        @param data - multi-channel time series C x T
+        @param key - ID associated with the time-series data sample
+
+        @return
+            samples: list of samples, each has dim 2 x C x W where it has an anchor and a positive/negative sample
+            labels: list of labels associated with each sample
         '''
-        samples = self.retrieve_cache(key)
+        samples, labels = self.retrieve_cache(key)
         if np.any(samples):
-            return samples
+            return samples, labels
 
         samples = []
         labels = []
 
-        for anchor_start in np.arange(0, data.shape[1], self.win): # non-overlapping anchor window
+        for anchor_start in np.arange(0, data.shape[1]-self.win, self.win): # non-overlapping anchor window
             # Positive window start t_pos:
             #     - |t_pos - t_anchor| <= tau_pos
             #           <-> t_pos <= tau_pos + t_anchor
@@ -149,11 +142,11 @@ class RelativePositioning(SSLTransform):
                 samples.extend([np.array([anchors[i], neg_winds[i]]) for i in range(len(anchors))]) # if anchors[i].shape == neg_winds[i].shape])
                 labels.extend(np.zeros(len(anchors)))
 
-        samples = np.stack(samples)
+        samples = np.stack(samples) # N x 2 x C x W
         if len(samples) != len(labels):
             raise ValueError('Number of samples and labels mismatch')
 
-        self.cache_data(samples, key)
+        self.cache_data(samples, labels, key)
         return samples, np.array(labels)
 
 class TemporalShuffling(SSLTransform):
@@ -301,17 +294,16 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
         self.x_transformer = transformer_cls(self.x_params)
 
         # Process data
-        self.data = [self.__process_data(i) for i in tqdm(self.files)]
-        # Preload data
-        # raw_data = [self.__preload_raw(f) for f in tqdm(self.files)]
-
-        # Transform data (populates self.data and self.ch_names). Note: this modifies input data.
-        # self.__transform_raw(raw_data)
+        data_labels = [self.__process_data(i) for i in tqdm(self.files)]
+        self.data = [i[0] for i in data_labels]
+        self.y_data = [i[1] for i in data_labels]
+        self.__aggregate_data()
+        self.__shuffle_data()
 
     def __process_data(self, raw_file):
         raw_data = self.__preload_raw(raw_file)
-        data = self.__transform_raw(raw_data, raw_file)
-        return data
+        data, y_data = self.__transform_raw(raw_data, raw_file)
+        return data, y_data
 
     def __preload_raw(self, raw_file):
         # print(f"Preloading {subject}...")
@@ -320,12 +312,8 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
         return mat_data
 
     def __transform_raw(self, data, key):
+        # Transform data (populates self.data and self.ch_names). Note: this modifies input data.
         return self.x_transformer.transform(data, key)
-        # # Transform to feature space
-        # transformed = [self.x_transformer.transform(d, self.subjects[idx]) for idx, d in enumerate(tqdm(data))] # S T F..
-
-        # self.data, self.y_data = self.x_transformer.aggregate(transformed)
-
 
     def __len__(self):
         return len(self.data)
@@ -335,4 +323,50 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
         # data = torch.stack(data)
         return data, self.y_data[idx]
 
+    def __aggregate_data(self):
+        '''
+        Assume that self.data is currently subject-centric, not sample-centric.
+        Flattening out self.data keeping sample-metadata association
+        Currently tracked metadata:
+            - Subject - self.subjects
+            - Filename - self.files
+            - Labels - self.y_data
+        '''
+        # best method shown by https://realpython.com/python-flatten-list/
+        expanded_subjects = []
+        for i, subj in enumerate(self.subjects):
+            expanded_subjects.extend([subj]*len(self.data[i]))
+        self.subjects = np.array(expanded_subjects)
 
+        expanded_files = []
+        for i, f in enumerate(self.files):
+            expanded_files.extend([f]*len(self.data[i]))
+        self.files = np.array(expanded_files)
+
+        self.data = np.concatenate(self.data, axis=0)
+        self.y_data = np.concatenate(self.y_data, axis=0)
+
+        if len(self.data) != len(self.y_data):
+            raise ValueError('Unmatched labels-samples')
+        
+        if len(self.files) != len(self.subjects) and len(self.files) != len(self.data):
+            raise ValueError('Mismatch data-metadata')
+
+
+    def __shuffle_data(self):
+        '''
+        Shuffle data preserving sample-metadata association
+        Currently tracked metadata:
+            - Subject - self.subjects
+            - Filename - self.files
+            - Labels - self.y_data
+        '''
+        # shuffle data
+        shuffle_idxs = np.random.permutation(len(self.data))
+        self.data = self.data[shuffle_idxs]
+        self.y_data = self.y_data[shuffle_idxs]
+        self.subjects = self.subjects[shuffle_idxs]
+        self.files = self.files[shuffle_idxs]
+
+        if len(self.data) != len(self.y_data):
+            raise Exception('Mismatch between number of samples and labels')
