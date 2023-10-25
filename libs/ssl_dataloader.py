@@ -26,7 +26,7 @@ class SSLTransform(ABC):
         """
         self.SFREQ = x_params['sfreq']
         default_params = {
-            "cache_dir": '/expanse/projects/nemar/dtyoung/eeg-ssl/childmind-rest-cache',
+            "cache_dir": '/expanse/projects/nemar/dtyoung/eeg-ssl/data/childmind-rest-cache',
             "win": self.SFREQ,
             "stride": self.SFREQ/2,
             "tau_pos": int(self.SFREQ*3),
@@ -142,7 +142,7 @@ class RelativePositioning(SSLTransform):
                 samples.extend([np.array([anchors[i], neg_winds[i]]) for i in range(len(anchors))]) # if anchors[i].shape == neg_winds[i].shape])
                 labels.extend(np.zeros(len(anchors)))
 
-        samples = np.stack(samples) # N x 2 x C x W
+        samples = np.stack(samples) # N x 2 (anchors, pos/neg) x C x W
         if len(samples) != len(labels):
             raise ValueError('Number of samples and labels mismatch')
 
@@ -236,7 +236,7 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
     SFREQ = 128
 
     def __init__(self,
-            data_dir='/expanse/projects/nemar/dtyoung/eeg-ssl/childmind-rest', # location of asr cleaned data 
+            data_dir='/expanse/projects/nemar/dtyoung/eeg-ssl/data/childmind-rest', # location of asr cleaned data 
             subjects:list=None,                                       # subjects to use, default to all
             n_subjects=None,                                          # number of subjects to pick, default all
             x_params={
