@@ -21,6 +21,15 @@ class SSLModel(ABC, nn.Module):
         for k,v in default_params.items():
             setattr(self, k, v)
 
+    @abstractmethod
+    def encode(self, x):
+        pass
+
+    @abstractmethod
+    def classify(self, x):
+        pass
+
+
 class VGGSSL(SSLModel):
     def __init__(self, model_params=None):
         super().__init__(model_params)
@@ -81,39 +90,19 @@ class VGGSSL(SSLModel):
             self.gAR = nn.GRU(4096, 100) # hidden size = 100, per (Banville et al, 2020) experiment
 
     def forward(self, x):
-        if self.task == "CPC":
-            # x: N x 3 (context, future, negative) x samples x R x G x B
-            embeds = []
-            for n in range(x.shape[0]): # for each batch sample
-                tup = []
-                for samples in x[n]:
-                    tup.append([self.encoder(sample) for sample in samples])
-                embeds.append(tup)
-            
-            # embeds: N x 3 x samples x 4096 (samples are different between context, future, and negative
-            context = self.gAR(embeds[:,0,:,:]) # N x 100
-            
-            z = [(context[n], embeds[n,1,:,:], embeds[n,2,:,:]) for n in range(len(embeds))]
-        else:
-            # If task == RP, embeds is a list/tuple of two embeddings
-            #    task == TS, embeds is a list/tuple of three embeddings
+        return self(x)
+    
+    def encode(self, x):
+        return self.encoder(x)
 
-            # indexing keeping dimension: https://discuss.pytorch.org/t/solved-simple-question-about-keep-dim-when-slicing-the-tensor/9280
-            embeds = [self.encoder(x[:,i:i+1]) for i in range(x.shape[1])] # x: N (Batch_size) x Sample_size x F
-            if self.task == "RP":
-                g = torch.abs(embeds[0] - embeds[1])
-            elif self.task == "TS":
-                g = torch.cat([torch.abs(embeds[0] - embeds[1]), torch.abs(embeds[1] - embeds[2])], dim=1)
-            z = self.classifier(g)
-        
-            del g
-            del embeds
-        return z
+    def classify(self, x):
+        return self.classifier(x)
     
 class SSLModelUtils():
     def __init__(self,
             model_params={
-                'model': 'VGGSSL'
+                'model': 'VGGSSL',
+                'task': 'RP'
             },
             train_params={
                 'batch_size': 16,
@@ -127,7 +116,7 @@ class SSLModelUtils():
                 'lr_decay_nepoch': 100,
                 'print_every': 10,
             }):
-
+        self.task = model_params['task']
         self.model = globals()[model_params['model']](model_params)
         self.__init_train(train_params)
     
@@ -183,7 +172,7 @@ class SSLModelUtils():
             for t, (sample, label) in enumerate(dataloader):
                 label = label.to(device=self.device, dtype=torch.long)
                 sample = sample.to(device=self.device, dtype=torch.float32) # torch model weights is float32 by default. float64 would not work
-                logit = self.model(sample)
+                logit = self.forward(sample)
                 
                 params.optimizer.zero_grad()
                 loss =  F.cross_entropy(logit, label)
@@ -202,4 +191,33 @@ class SSLModelUtils():
             if e > 0 and e % params.print_every == 0:
                 torch.save(self.model.state_dict(), f"{params.checkpoint_path}/epoch_{e}")
 
+    def forward(self, x):
+        if self.model.task == "CPC":
+            # x: N x 3 (context, future, negative) x samples x R x G x B
+            embeds = []
+            for n in range(x.shape[0]): # for each batch sample
+                tup = []
+                for samples in x[n]:
+                    tup.append([self.encoder(sample) for sample in samples])
+                embeds.append(tup)
+            
+            # embeds: N x 3 x samples x 4096 (samples are different between context, future, and negative
+            context = self.modelgAR(embeds[:,0,:,:]) # N x 100
+            
+            z = [(context[n], embeds[n,1,:,:], embeds[n,2,:,:]) for n in range(len(embeds))]
+        else:
+            # If task == RP, embeds is a list/tuple of two embeddings
+            #    task == TS, embeds is a list/tuple of three embeddings
+
+            # indexing keeping dimension: https://discuss.pytorch.org/t/solved-simple-question-about-keep-dim-when-slicing-the-tensor/9280
+            embeds = [self.model.encode(x[:,i:i+1]) for i in range(x.shape[1])] # x: N (Batch_size) x Sample_size x F
+            if self.model.task == "RP":
+                g = torch.abs(embeds[0] - embeds[1])
+            elif self.model.task == "TS":
+                g = torch.cat([torch.abs(embeds[0] - embeds[1]), torch.abs(embeds[1] - embeds[2])], dim=1)
+            z = self.model.classify(g)
+        
+            del g
+            del embeds
+        return z
     
