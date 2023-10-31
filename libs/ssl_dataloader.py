@@ -8,6 +8,7 @@ from tqdm import tqdm
 import hashlib
 from abc import ABC, abstractmethod
 import pickle
+from joblib import Parallel, delayed
 
 class SSLTransform(ABC):
     def __init__(self, x_params):
@@ -55,12 +56,15 @@ class SSLTransform(ABC):
         pass
 
     def process_data(self, raw_file, key):
-        samples, labels = self.retrieve_cache(key)
-        if np.any(samples):
-            return samples, labels
-        else:
-            data = self.preload_raw(raw_file)
-            return self.transform(data, key)
+        try:
+            samples, labels = self.retrieve_cache(key)
+            if np.any(samples):
+                return samples, labels
+            else:
+                data = self.preload_raw(raw_file)
+                return self.transform(data, key)
+        except:
+            return np.array([]), np.array([])
         
     def preload_raw(self, raw_file):
         EEG = mne.io.read_raw_eeglab(os.path.join(raw_file), preload=True)
@@ -303,13 +307,29 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
         self.x_transformer = transformer_cls(self.x_params)
 
         # Process data
-        data_labels = [self.__transform_raw(i) for i in tqdm(self.files)]
-        self.data = [i[0] for i in data_labels]
-        self.y_data = [i[1] for i in data_labels]
+        # data_labels = [self.transform_raw(i) for i in tqdm(self.files)]
+        data_labels = Parallel(n_jobs=1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
+        data_shape = None
+        label_shape = None
+        data = []
+        labels = []
+        for i in data_labels:
+            if len(i[0]) > 0 and not data_shape:
+                data_shape = i[0].shape
+                print(i[1])
+                label_shape = i[1].shape
+            if len(i[0]) == 0:
+                data.append(i[0].reshape(0,*data_shape[1:]))
+                labels.append(i[1].reshape(0, *label_shape[1:]))
+            else:
+                data.append(i[0])
+                labels.append(i[1])
+        self.data = data #[i[0] for i in data_labels]
+        self.y_data = labels #[i[1] for i in data_labels]
         self.__aggregate_data()
         self.__shuffle_data()
 
-    def __transform_raw(self, raw_file):
+    def transform_raw(self, raw_file):
         # Transform data (populates self.data and self.ch_names). Note: this modifies input data.
         return self.x_transformer.process_data(os.path.join(self.basedir, raw_file), key=raw_file)
 
@@ -368,3 +388,9 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
 
         if len(self.data) != len(self.y_data):
             raise Exception('Mismatch between number of samples and labels')
+
+    def _thread_worker(self, raw_file):
+        def default_return(msg=""):
+            return msg
+
+        return self.transform_raw(raw_file)
