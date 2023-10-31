@@ -49,6 +49,27 @@ class SSLTransform(ABC):
     def data_keys(self):
         pass
 
+    @property
+    @abstractmethod
+    def method(self):
+        pass
+
+    def process_data(self, raw_file, key):
+        samples, labels = self.retrieve_cache(key)
+        if np.any(samples):
+            return samples, labels
+        else:
+            data = self.preload_raw(raw_file)
+            return self.transform(data, key)
+        
+    def preload_raw(self, raw_file):
+        EEG = mne.io.read_raw_eeglab(os.path.join(raw_file), preload=True)
+        mat_data = EEG.get_data()
+
+        if len(mat_data.shape) > 2:
+            raise ValueError('Expect raw data to be CxT dimension')
+        return mat_data
+
     @abstractmethod
     def transform(self, data, key):
         """
@@ -91,10 +112,10 @@ class SSLTransform(ABC):
 
 class RelativePositioning(SSLTransform):
     data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
+    method = "RP"
 
     def __init__(self, x_params):
         super().__init__(x_params)
-        self.method = "RP"
 
     def transform(self, data, key):
         '''
@@ -108,10 +129,6 @@ class RelativePositioning(SSLTransform):
             samples: list of samples, each has dim 2 x C x W where it has an anchor and a positive/negative sample
             labels: list of labels associated with each sample
         '''
-        samples, labels = self.retrieve_cache(key)
-        if np.any(samples):
-            return samples, labels
-
         samples = []
         labels = []
 
@@ -151,10 +168,10 @@ class RelativePositioning(SSLTransform):
 
 class TemporalShuffling(SSLTransform):
     data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
+    method = 'TS'
 
     def __init__(self, x_params):
         super().__init__(x_params)
-        self.method = "TS"
 
         if self.tau_pos < self.win*3:
             raise ValueError('Temporal shuffling requires positive context to be at least 3 times window size')
@@ -166,10 +183,6 @@ class TemporalShuffling(SSLTransform):
         Sample size is increased by switching positive samples
         x order: (pos_sample_left, in/dis-order_sample, pos_sample_right)
         '''
-        samples = self.retrieve_cache(key)
-        if samples:
-            return samples
-
         # Our assumption will be the positive context will always be 3*window size.
         # Thus we'll have 3 consecutive windows extracted from positive context (in-order group)
         # And we'll also randomly pick one window in the negative context to form a disordered group
@@ -199,10 +212,10 @@ class TemporalShuffling(SSLTransform):
 
 class CPC(SSLTransform):
     data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
+    method = 'CPC'
 
     def __init__(self, x_params):
         super().__init__(x_params)
-        self.method = "CPC"
 
     def transform(self, data, key):
         '''
@@ -211,10 +224,6 @@ class CPC(SSLTransform):
         An array of Np contigously non-overlapping windows that follows the context group is used as future (positive) samples
         For each positive sample, pick a list of Nb negative samples randomly from the data
         '''
-        samples = self.retrieve_cache(key)
-        if samples:
-            return samples
-
         # Adopting the (Banville et al, 2020) practice, ...
         # for each subject dataset, get all possible context and future samples pairs. --> Nb+1 pairs
         # then for each Np future sample, pick negative samples from the other Nb pairs
@@ -294,26 +303,15 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
         self.x_transformer = transformer_cls(self.x_params)
 
         # Process data
-        data_labels = [self.__process_data(i) for i in tqdm(self.files)]
+        data_labels = [self.__transform_raw(i) for i in tqdm(self.files)]
         self.data = [i[0] for i in data_labels]
         self.y_data = [i[1] for i in data_labels]
         self.__aggregate_data()
         self.__shuffle_data()
 
-    def __process_data(self, raw_file):
-        raw_data = self.__preload_raw(raw_file)
-        data, y_data = self.__transform_raw(raw_data, raw_file)
-        return data, y_data
-
-    def __preload_raw(self, raw_file):
-        # print(f"Preloading {subject}...")
-        EEG = mne.io.read_raw_eeglab(os.path.join(self.basedir, raw_file), preload=True)
-        mat_data = EEG.get_data()
-        return mat_data
-
-    def __transform_raw(self, data, key):
+    def __transform_raw(self, raw_file):
         # Transform data (populates self.data and self.ch_names). Note: this modifies input data.
-        return self.x_transformer.transform(data, key)
+        return self.x_transformer.process_data(os.path.join(self.basedir, raw_file), key=raw_file)
 
     def __len__(self):
         return len(self.data)
