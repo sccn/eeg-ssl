@@ -28,10 +28,10 @@ class SSLTransform(ABC):
         self.SFREQ = x_params['sfreq']
         default_params = {
             "cache_dir": '/expanse/projects/nemar/dtyoung/eeg-ssl/data/childmind-rest-cache',
-            "win": self.SFREQ,
-            "stride": self.SFREQ/2,
-            "tau_pos": int(self.SFREQ*3),
-            "tau_neg": int(self.SFREQ*3),
+            "win": self.SFREQ*2,
+            "stride": self.SFREQ,
+            "tau_pos": int(self.SFREQ*4),
+            "tau_neg": int(self.SFREQ*4),
             "n_samples": 1,
             "seed": 0,
             "isResume": True
@@ -166,9 +166,9 @@ class RelativePositioning(SSLTransform):
         samples = np.stack(samples) # N x 2 (anchors, pos/neg) x C x W
         if len(samples) != len(labels):
             raise ValueError('Number of samples and labels mismatch')
-
+        labels = np.array(labels)
         self.cache_data(samples, labels, key)
-        return samples, np.array(labels)
+        return samples, labels
 
 class TemporalShuffling(SSLTransform):
     data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
@@ -308,7 +308,7 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
 
         # Process data
         # data_labels = [self.transform_raw(i) for i in tqdm(self.files)]
-        data_labels = Parallel(n_jobs=1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
+        data_labels = Parallel(n_jobs=-1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
         data_shape = None
         label_shape = None
         data = []
@@ -316,7 +316,6 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
         for i in data_labels:
             if len(i[0]) > 0 and not data_shape:
                 data_shape = i[0].shape
-                print(i[1])
                 label_shape = i[1].shape
             if len(i[0]) == 0:
                 data.append(i[0].reshape(0,*data_shape[1:]))
