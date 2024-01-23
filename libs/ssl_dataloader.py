@@ -27,7 +27,7 @@ class SSLTransform(ABC):
         """
         self.SFREQ = x_params['sfreq']
         default_params = {
-            "cache_dir": '/expanse/projects/nemar/dtyoung/eeg-ssl/data/childmind-rest-cache',
+            "cache_dir": '/mnt/nemar/dtyoung/eeg-ssl/data/childmind-rest-cache',
             "win": self.SFREQ*2,
             "stride": self.SFREQ,
             "tau_pos": int(self.SFREQ*4),
@@ -112,7 +112,6 @@ class SSLTransform(ABC):
         cache_file = f'{self.cache_dir}/{self.method}_{data_hash}.pkl' 
         with open(cache_file, 'wb') as fout:
             pickle.dump({'data': data, 'labels': labels}, fout)
-
 
 class RelativePositioning(SSLTransform):
     data_keys = ["feat_inst_theta", "feat_inst_alpha", "feat_inst_beta"] # R G B
@@ -249,7 +248,7 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
     SFREQ = 128
 
     def __init__(self,
-            data_dir='/expanse/projects/nemar/dtyoung/eeg-ssl/data/childmind-rest', # location of asr cleaned data 
+            data_dir='/mnt/nemar/dtyoung/eeg-ssl/data/childmind-rest', # location of asr cleaned data 
             subjects:list=None,                                       # subjects to use, default to all
             n_subjects=None,                                          # number of subjects to pick, default all
             x_params={

@@ -29,7 +29,6 @@ class SSLModel(ABC, nn.Module):
     def classify(self, x):
         pass
 
-
 class VGGSSL(SSLModel):
     def __init__(self, model_params=None):
         super().__init__(model_params)
@@ -81,7 +80,7 @@ class VGGSSL(SSLModel):
         return vgg16_rescaled
 
     def __model_augment(self):
-        self.encoder = torch.nn.Sequential(self.encoder.features, self.encoder.flatten, nn.Linear(16384, 4096))
+        self.encoder = torch.nn.Sequential(self.encoder.features, self.encoder.flatten, nn.Linear(32768, 4096))
         if self.task == "RP":
             self.classifier = nn.Linear(4096, 2)
         elif self.task == "TS":
@@ -118,7 +117,7 @@ class SSLModelUtils():
             }):
         self.task = model_params['task']
         self.model = globals()[model_params['model']](model_params)
-        self.__init_train(train_params)
+        self.__init_train(train_params) # initialize training paramters
     
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -161,36 +160,6 @@ class SSLModelUtils():
             raise ValueError('Not accepted dataset type')
         return loader
 
-    def train(self, dataloader):
-        params = SimpleNamespace(**self.train_params)
-        writer = SummaryWriter(params.log_dir)
-        dataloader = self.get_dataloader(dataloader)
-
-        self.model.to(device=self.device)
-        self.model.train()
-        for e in range(params.num_epochs):
-            for t, (sample, label) in enumerate(dataloader):
-                label = label.to(device=self.device, dtype=torch.long)
-                sample = sample.to(device=self.device, dtype=torch.float32) # torch model weights is float32 by default. float64 would not work
-                logit = self.forward(sample)
-                
-                params.optimizer.zero_grad()
-                loss =  F.cross_entropy(logit, label)
-                loss.backward()
-                params.optimizer.step()
-
-                if t % params.print_every == 0:
-                    writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
-                    print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
-
-                del label
-                del logit
-                del loss
-
-            # Save model every print_every epochs
-            if e > 0 and e % params.print_every == 0:
-                torch.save(self.model.state_dict(), f"{params.checkpoint_path}/epoch_{e}")
-
     def forward(self, x):
         if self.model.task == "CPC":
             # x: N x 3 (context, future, negative) x samples x R x G x B
@@ -221,3 +190,32 @@ class SSLModelUtils():
             del embeds
         return z
     
+    def train(self, dataloader):
+        params = SimpleNamespace(**self.train_params)
+        writer = SummaryWriter(params.log_dir)
+        dataloader = self.get_dataloader(dataloader)
+
+        self.model.to(device=self.device)
+        self.model.train()
+        for e in range(params.num_epochs):
+            for t, (sample, label) in enumerate(dataloader):
+                label = label.to(device=self.device, dtype=torch.long)
+                sample = sample.to(device=self.device, dtype=torch.float32) # torch model weights is float32 by default. float64 would not work
+                logit = self.forward(sample)
+                
+                params.optimizer.zero_grad()
+                loss =  F.cross_entropy(logit, label)
+                loss.backward()
+                params.optimizer.step()
+
+                if t % params.print_every == 0:
+                    writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
+                    print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
+
+                del label
+                del logit
+                del loss
+
+            # Save model every print_every epochs
+            if e > 0 and e % params.print_every == 0:
+                torch.save(self.model.state_dict(), f"{params.checkpoint_path}/epoch_{e}")
