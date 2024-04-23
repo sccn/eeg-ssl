@@ -252,12 +252,13 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
             subjects:list=None,                                       # subjects to use, default to all
             n_subjects=None,                                          # number of subjects to pick, default all
             x_params={
-                "feature": "RelativePositioning",                    #
+                "feature": "RelativePositioning",                     #
                 "window": -1,                                         # number of samples to average over (-1: full subject)
                 "stride": 1,                                          # number of samples to stride window by (does nothing when window = -1)
             },
             n_cv=None,                                                # (k,folds) Use this to control train vs test; independent of seed
             is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
+            x_transformer=None,                                       # transform to apply to data
             seed=None):                                               # numpy random seed
         np.random.seed(seed)
         self.basedir = data_dir
@@ -296,40 +297,53 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
         if "sfreq" not in x_params:
             x_params['sfreq'] = self.SFREQ
         self.x_params = x_params
-        if type(x_params["feature"]) is str:
-            try:
-                transformer_cls = globals()[x_params["feature"]]
-            except KeyError:
-                raise ValueError("x_params.feature class not found")
-        else:
-            transformer_cls = x_params["feature"]
-        self.x_transformer = transformer_cls(self.x_params)
+
+        # self.data = []
+        # if type(x_params["feature"]) is str:
+        #     try:
+        #         transformer_cls = globals()[x_params["feature"]]
+        #     except KeyError:
+        #         raise ValueError("x_params.feature class not found")
+        # else:
+        #     transformer_cls = x_params["feature"]
+        # self.x_transformer = transformer_cls(self.x_params)
 
         # Process data
         # data_labels = [self.transform_raw(i) for i in tqdm(self.files)]
-        data_labels = Parallel(n_jobs=-1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
-        data_shape = None
-        label_shape = None
-        data = []
-        labels = []
-        for i in data_labels:
-            if len(i[0]) > 0 and not data_shape:
-                data_shape = i[0].shape
-                label_shape = i[1].shape
-            if len(i[0]) == 0:
-                data.append(i[0].reshape(0,*data_shape[1:]))
-                labels.append(i[1].reshape(0, *label_shape[1:]))
-            else:
-                data.append(i[0])
-                labels.append(i[1])
-        self.data = data #[i[0] for i in data_labels]
-        self.y_data = labels #[i[1] for i in data_labels]
+        self.data = Parallel(n_jobs=-1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
+        # here self.data has dimension of (n_samples, C, T)
+        print('Data shape:', self.data[0].shape)
+
+        if x_transformer:
+            self.data = x_transformer(self.data)
+
+        # data_shape = None
+        # label_shape = None
+        # data = []
+        # labels = []
+        # for i in data_labels:
+        #     if len(i[0]) > 0 and not data_shape:
+        #         data_shape = i[0].shape
+        #         label_shape = i[1].shape
+        #     if len(i[0]) == 0:
+        #         data.append(i[0].reshape(0,*data_shape[1:]))
+        #         labels.append(i[1].reshape(0, *label_shape[1:]))
+        #     else:
+        #         data.append(i[0])
+        #         labels.append(i[1])
+        # self.data = data #[i[0] for i in data_labels]
+        # self.y_data = labels #[i[1] for i in data_labels]
         self.__aggregate_data()
         self.__shuffle_data()
 
+    '''
+    Load and preprocess raw data
+    @param str raw_file - path to raw file
+    @return np.array - channel x time
+    '''
     def transform_raw(self, raw_file):
         # Transform data (populates self.data and self.ch_names). Note: this modifies input data.
-        return self.x_transformer.process_data(os.path.join(self.basedir, raw_file), key=raw_file)
+        return self.preprocess_data(os.path.join(self.basedir, raw_file), key=raw_file)
 
     def __len__(self):
         return len(self.data)
@@ -388,7 +402,56 @@ class ChildmindSSLDataset(torch.utils.data.Dataset):
             raise Exception('Mismatch between number of samples and labels')
 
     def _thread_worker(self, raw_file):
+        return self.transform_raw(raw_file)
+
+    def preprocess_data(self, raw_file, key):
+        try:
+            samples, labels = self.retrieve_cache(key)
+            if np.any(samples):
+                return samples, labels
+            else:
+                data = self.preload_raw(raw_file)
+                return data
+        except:
+            return np.array([]), np.array([])
+        
+    def preload_raw(self, raw_file):
+        EEG = mne.io.read_raw_eeglab(os.path.join(raw_file), preload=True)
+        mat_data = EEG.get_data()
+
+        if len(mat_data.shape) > 2:
+            raise ValueError('Expect raw data to be CxT dimension')
+        return mat_data
+
+    def hash_key(self, key):
+        hash_object = hashlib.sha256()
+        hash_object.update(bytes(key, 'utf-8'))
+
+        # Calculate the hash (digest)
+        hash_result = hash_object.digest()
+
+        return hash_result.hex() # the hash result (in hexadecimal format)
+    
+    def retrieve_cache(self, key):
+        data_hash = self.hash_key(key)
+        if self.isResume and os.path.exists(f'{self.cache_dir}/{self.method}_{data_hash}.pkl'):
+            print('Retrieve cache')
+            cache_file = f'{self.cache_dir}/{self.method}_{data_hash}.pkl'
+            with open(cache_file, 'rb') as fin:
+                saved_data = pickle.load(fin) 
+            samples = saved_data['data']
+            labels = saved_data['labels']
+            return samples, labels
+        else:
+            return np.empty(0), np.empty(0)
+
+    def cache_data(self, data, labels, key):
+        data_hash = self.hash_key(key)
+        if not os.path.exists(self.cache_dir):
+            os.mkdir(self.cache_dir)
+        cache_file = f'{self.cache_dir}/{self.method}_{data_hash}.pkl' 
+        with open(cache_file, 'wb') as fout:
+            pickle.dump({'data': data, 'labels': labels}, fout)
+
         def default_return(msg=""):
             return msg
-
-        return self.transform_raw(raw_file)

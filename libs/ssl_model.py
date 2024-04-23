@@ -29,6 +29,9 @@ class SSLModel(ABC, nn.Module):
     def classify(self, x):
         pass
 
+
+
+
 class VGGSSL(SSLModel):
     def __init__(self, model_params=None):
         super().__init__(model_params)
@@ -97,6 +100,7 @@ class VGGSSL(SSLModel):
     def classify(self, x):
         return self.classifier(x)
     
+        
 class SSLModelUtils():
     def __init__(self,
             model_params={
