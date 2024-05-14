@@ -110,6 +110,40 @@ class Wav2VecBrainModel(nn.Module):
                 x = self.attention[i](x, x, x)[0]
             return torch.permute(self.feed_forward(x), (0,2,1))
 
+class LacunaModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.feature_encoder = self.build_feature_encoder()
+        self.context_encoder = nn.LSTM(630, 512, 3, bidirectional= True, batch_first=True)
+
+    def build_feature_encoder(self):
+        conv0 = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size = (4, 2), stride = (4, 2)),
+            nn.LeakyReLU(),
+            nn.GroupNorm(64,64)
+        )
+        conv1 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size = (4, 2)),
+            nn.LeakyReLU(),
+            nn.GroupNorm(128,128)
+        )
+        conv2 = nn.Sequential(
+            nn.MaxPool2d((4, 2), stride = (1, 2)),
+            nn.Conv2d(128, 256, kernel_size = (3, 3)),
+            nn.MaxPool2d((4, 2), stride = (1, 2))
+        )
+        return nn.Sequential(
+            conv0,
+            conv1,
+            conv2
+        )
+
+    def forward(self, x):
+        x = self.feature_encoder(x)
+        x = torch.flatten(x, start_dim = 2)
+        x = self.context_encoder(x)
+        return x
+
 class VGGSSL(SSLModel):
     def __init__(self, model_params=None):
         super().__init__(model_params)
