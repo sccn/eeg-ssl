@@ -32,10 +32,9 @@ class SSLModel(ABC, nn.Module):
 class Wav2VecBrainModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.feature_encoder = self.FeatureEncoder().to(device=self.device)
-        self.context_encoder = self.TransformerLayer().to(device=self.device)
-    
+        self.feature_encoder = self.FeatureEncoder()
+        self.context_encoder = self.TransformerLayer()
+
     def forward(self, x):
         x = self.feature_encoder(x)
         x = self.context_encoder(x)
@@ -103,6 +102,7 @@ class Wav2VecBrainModel(nn.Module):
                 nn.Dropout(p=0.1, inplace=False),
                 nn.LayerNorm((768,), eps=1e-05, elementwise_affine=True)
                 )
+        
         def forward(self, x):
             x = self.pos_emb(x) + torch.permute(x, (0,2,1))
             x = self.norm(x)
