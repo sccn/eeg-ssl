@@ -94,9 +94,7 @@ class Wav2VecBrainModel(nn.Module):
                 nn.LayerNorm((768,), eps=1e-05, elementwise_affine=True),
                 nn.Dropout(p=0.1, inplace=False)
             )
-            self.attention = []
-            for i in range(12):
-                self.attention.append(nn.MultiheadAttention(768, 1))
+            self.attention = nn.Sequential(*[nn.MultiheadAttention(768, 1) for i in range(12)])
             self.feed_forward = nn.Sequential(
                 nn.Dropout(p=0.1, inplace=False),
                 nn.Linear(in_features=768, out_features=3072, bias=True),
