@@ -9,11 +9,17 @@ import hashlib
 from abc import ABC, abstractmethod
 import pickle
 from joblib import Parallel, delayed
+import pandas as pd
 
 verbose = False
 class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
     def __init__(self,
-            data_dir='/mnt/nemar/dtyoung/eeg-ssl/data/childmind-rest', # location of asr cleaned data 
+            data_dir='/mnt/nemar/child-mind-rest', # location of asr cleaned data 
+            metadata={
+                'filepath': '/home/dung/subjects.csv', # path to subject metadata csv file
+                'index_column': 'participant_id',      # index column of the file corresponding to subject name
+                'key': 'gender',                       # which metadata we want to use for finetuning
+            },                 
             subjects:list=None,                                       # subjects to use, default to all
             n_subjects=None,                                          # number of subjects to pick, default all
             x_params={
@@ -36,6 +42,7 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
                 print("Warning: unknown keys present in user specified subjects")
         shuffling_indices = list(range(len(self.subjects)))
         np.random.shuffle(shuffling_indices)
+        self.metadata_info= metadata
         self.subjects = self.subjects[shuffling_indices]
         self.files = self.files[shuffling_indices]
 
@@ -44,6 +51,7 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
             print("Warning: n_subjects cannot be larger than subjects")
         self.subjects = self.subjects[:n_subjects]
         self.files = self.files[:n_subjects]
+
 
         # Split Train-Test TODO
         # self.is_test = is_test
@@ -61,12 +69,24 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
         # Process data
 
         # data_labels = [self.transform_raw(i) for i in tqdm(self.files)]
-        self.data = Parallel(n_jobs=-1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
-        # here self.data has dimension of (n_files, C, T)
-        print('Data shape:', self.data[0].shape)
+        # self.data = Parallel(n_jobs=-1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
+        # here self.data has dimension of (n_files, K, C, M)
 
         self.__aggregate_data()
         self.__shuffle_data()
+        print('Data shape:', self.data.shape)
+
+    '''
+    Extract metadata of samples
+    '''
+    def get_metadata(self, key):
+        subj_info = pd.read_csv(self.metadata_info['filepath'], index_col=self.metadata_info['index_column']) # master sheet containing all subjects
+        if key not in subj_info:
+            print('Metadata key not found')
+            return 
+        else:
+            metadata = [subj_info[key][subj] for subj in self.subjects]
+            return metadata
 
     '''
     Load and preprocess raw data
@@ -118,10 +138,10 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
         self.files = np.array(expanded_files)
 
         self.data = np.concatenate(self.data, axis=0)
-        # self.y_data = np.concatenate(self.y_data, axis=0)
+        self.y_data = np.array(self.get_metadata(self.metadata_info['key']))
 
-        # if len(self.data) != len(self.y_data):
-        #     raise ValueError('Unmatched labels-samples')
+        if len(self.data) != len(self.y_data):
+            raise ValueError('Unmatched labels-samples')
         
         if len(self.files) != len(self.subjects) and len(self.files) != len(self.data):
             raise ValueError('Mismatch data-metadata')
@@ -138,7 +158,7 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
         # shuffle data
         shuffle_idxs = np.random.permutation(len(self.data))
         self.data = self.data[shuffle_idxs]
-        # self.y_data = self.y_data[shuffle_idxs]
+        self.y_data = self.y_data[shuffle_idxs]
         self.subjects = self.subjects[shuffle_idxs]
         self.files = self.files[shuffle_idxs]
 
@@ -206,44 +226,4 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        data = self.data[idx]
-        # return data, self.y_data[idx]
-        return data
-
-
-        if self.tau_pos < self.win*3:
-            raise ValueError('Temporal shuffling requires positive context to be at least 3 times window size')
-
-    def transform(self, data, key):
-        '''
-        Pick two samples from positive context
-        Pick another sample either from positive context in between previous two (--> y = 1 (in-order)), or from negative context (--> y = 0 (disordered))
-        Sample size is increased by switching positive samples
-        x order: (pos_sample_left, in/dis-order_sample, pos_sample_right)
-        '''
-        # Our assumption will be the positive context will always be 3*window size.
-        # Thus we'll have 3 consecutive windows extracted from positive context (in-order group)
-        # And we'll also randomly pick one window in the negative context to form a disordered group
-        samples = []
-        labels = []
-
-        tau_pos = self.tau_pos
-        for pos_start in np.arange(0, data.shape[1], tau_pos): # non-overlapping positive contexts
-            if pos_start + tau_pos < data.shape[1]:
-                pos_winds = [data[:, pos_start:pos_start+self.win], data[:, pos_start+self.win*2:pos_start+self.win*3]] # two positive windows
-                inorder = np.array(pos_winds[:1] + [data[:, pos_start+self.win:pos_start+self.win*2]] + pos_winds[1:])
-                samples.extend([inorder, np.flip(inorder).copy()])
-                labels.extend(np.ones(2))
-
-                # for negative windows, want both sides of anchor window
-                neg_winds_start = np.concatenate((np.arange(0, pos_start-self.tau_neg-self.win, self.stride), np.arange(pos_start+tau_pos+self.tau_neg, data.shape[1]-self.win, self.stride)))
-                selected_neg_start = np.random.choice(neg_winds_start, 1, replace=False)[0]
-                disorder = np.array(pos_winds[:1] + [data[:,selected_neg_start:selected_neg_start+self.win]] + pos_winds[1:]) # two positive windows, disorder sample added to the end
-                samples.extend([disorder, np.flip(disorder).copy()])
-                labels.extend(np.zeros(2))
-
-        samples = np.stack(samples)
-        if len(samples) != len(labels):
-            raise ValueError('Number of samples and labels mismatch')
-
-        return samples, np.array(labels)
+        return self.data[idx], self.y_data[idx]
