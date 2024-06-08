@@ -37,8 +37,6 @@ class MaskedContrastiveLearningTask():
             masked_latent:      (N x D x K) Batch-size embeddings of the feature encoder output of true masked inputs
             foil_latents:       (N x D x K) Batch-size embeddings of the feature conder output of the foil inputs
         '''
-        print(model.feature_encoder.device)
-        print(model.context_encoder.device)
         embeddings = model.feature_encoder(x) # N x D x K
         if self.verbose:
             print('feature encoder output shape', embeddings.shape)
@@ -84,7 +82,7 @@ class MaskedContrastiveLearningTask():
         @return
             batched mean contrastive loss
         '''
-        losses = torch.zeros((masked_latents.shape[-1],))
+        losses = torch.zeros((masked_latents.shape[-1],), device=self.device)
         for k in range(masked_latents.shape[-1]):
             predicted_masked_latent = predictions[:,:,k] # N x D
             if self.verbose:
@@ -92,7 +90,7 @@ class MaskedContrastiveLearningTask():
             cos_sim = F.cosine_similarity(torch.unsqueeze(predicted_masked_latent, dim=-1), masked_latents, dim=1) # N x K
             if self.verbose:
                 print('cosine similarity shape', cos_sim.shape)
-            labels = torch.zeros([cos_sim.shape[0], cos_sim.shape[1]]) # N x K
+            labels = torch.zeros([cos_sim.shape[0], cos_sim.shape[1]], device=self.device) # N x K
             labels[:,k] = 1
             # print('labels', labels)
             # losses.append(F.cross_entropy(cos_sim, labels, reduction='mean'))
@@ -103,6 +101,7 @@ class MaskedContrastiveLearningTask():
         return torch.mean(losses)
 
     def train(self, model, dataset_train, dataset_val, train_params={}):
+        print('Training on ', self.device)
         self.train_params.update(train_params)
         num_epochs = self.train_params['num_epochs']
         batch_size = self.train_params['batch_size']
@@ -130,18 +129,32 @@ class MaskedContrastiveLearningTask():
                 del masked_latents
                 del loss
 
-            model.eval()
-            generator = torch.Generator().manual_seed(42)
-            val_train, val_test = random_split(dataset_val, [0.7, 0.3], generator=generator)
-            val_train_dataloader = DataLoader(val_train, batch_size = batch_size, shuffle = True)
-            for t, (samples, labels) in enumerate(val_train_dataloader):
-                samples = samples.to(device=self.device, dtype=torch.float32)
-                predictions = model(samples)
-                embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-                clf = LinearDiscriminantAnalysis()
-                clf.fit(embeddings.to_numpy(), labels.to_numpy())
+            self.finetune_eval_score(model, dataset_val)
 
-                score = clf.score(embeddings.)
+    def finetune_eval_score(self, model, dataset_val):
+        model.eval()
+        generator = torch.Generator().manual_seed(42)
+        val_train, val_test = random_split(dataset_val, [0.7, 0.3], generator=generator)
+        val_train_dataloader = DataLoader(val_train, batch_size = len(val_train), shuffle = True)
+        val_test_dataloader = DataLoader(val_test, batch_size = len(val_test), shuffle = True)
+
+        samples, labels = next(iter(val_train_dataloader))
+        samples = samples.to(device=self.device, dtype=torch.float32)
+        predictions = model(samples)
+        # print(predictions)
+        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
+        # print(embeddings)
+        clf = LinearDiscriminantAnalysis()
+        clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
+        print('Eval train score:', clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy()))
+
+        samples_test, labels_test = next(iter(val_test_dataloader))
+        samples_test = samples_test.to(device=self.device, dtype=torch.float32)
+        predictions = model(samples_test)
+        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
+        score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
+        print('Eval test score:', score)
+        return score
 
 
 
