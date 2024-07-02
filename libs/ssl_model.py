@@ -45,6 +45,8 @@ class Wav2VecBrainModel(nn.Module):
     class FeatureEncoder(nn.Module):
         def __init__(self):
             super().__init__()
+            self.K = [10, 3, 3, 3, 3, 2, 2]
+            self.S = [2, 1, 1, 1, 1, 1, 1]
             self.conv0 = []
             self.conv0.append(nn.Sequential(
                 nn.Conv1d(128, 512, kernel_size=(10,), stride=(4,), bias=False),
@@ -69,6 +71,20 @@ class Wav2VecBrainModel(nn.Module):
                 nn.Linear(in_features=512, out_features=768, bias=True),
                 nn.Dropout(p=0.1, inplace=False)
             )
+
+        def receptive_field(self):
+            St = 1
+            stride = self.S[::-1]
+            for s in stride:
+                St *= s
+            R = 1
+            i = 0
+            kernel = self.K[::-1]
+            for k in kernel:
+                R = R*stride[i] + (k - stride[i])
+                i += 1
+            return R, St
+
         def forward(self, x):
             x = self.extractor(x)
             x = torch.permute(x, (0,2,1))

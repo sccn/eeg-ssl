@@ -23,8 +23,8 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
             subjects:list=None,                                       # subjects to use, default to all
             n_subjects=None,                                          # number of subjects to pick, default all
             x_params={
-                "window": 24,
-                "sfreq": 128,
+                "window": 2,                                          # EEG window length in seconds
+                "sfreq": 128,                                         # sampling rate
             },
             is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
             seed=None):                                               # numpy random seed
@@ -32,7 +32,7 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
         self.basedir = data_dir
         self.files = np.array([i for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
         self.subjects = np.array([i.split('_')[0] for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
-        self.M = x_params['window']
+        self.M = x_params['sfreq'] * x_params['window']
         if subjects != None:
             subjects = [i for i in subjects if i in self.subjects]
             selected_indices = [subjects.index(i) for i in subjects if i in self.subjects]
@@ -64,12 +64,10 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
         #         self.subjects = self.subjects[self.n_cv[0]*split_size:(self.n_cv[0]+1)*split_size]
 
         # Load raw data
-        self.data = [self.transform_raw(i) for i in tqdm(self.files)] # here self.data has dimension of (n_files, C, T)
+        # self.data = [self.transform_raw(i) for i in tqdm(self.files)] # here self.data has dimension of (n_files, C, T)
 
         # Process data
-
-        # data_labels = [self.transform_raw(i) for i in tqdm(self.files)]
-        # self.data = Parallel(n_jobs=-1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
+        self.data = Parallel(n_jobs=-1, backend="threading", verbose=1)(delayed(self._thread_worker)(i) for i in tqdm(self.files))
         # here self.data has dimension of (n_files, K, C, M)
 
         self.__aggregate_data()
@@ -110,7 +108,7 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
         @return
             output  (K x C x M) Multichannel EEG input segmented into K segments of length M
         '''
-        # sample from left to right, discarding leftovers
+        # sample from left to right, non-overlapping, discarding leftovers
         indices = np.arange(0, x.shape[-1]-self.M, self.M)
         samples = [x[:,idx:idx+self.M] for idx in indices]
         samples = np.stack(samples, axis=0)

@@ -7,10 +7,12 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 import os
 import mne
+import wandb
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 class MaskedContrastiveLearningTask():
     def __init__(self, 
+                dataset: torch.utils.data.Dataset,
                 task_params={
                     'mask_prob': 0.5
                 },
@@ -21,10 +23,17 @@ class MaskedContrastiveLearningTask():
                 },
                 verbose=False
         ):
-        self.verbose=verbose
+        self.dataset = dataset
+        self.train_test_split()
+
         self.train_params = train_params
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.verbose=verbose
+
+    def train_test_split(self):
+        generator = torch.Generator().manual_seed(42)
+        self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
 
     def forward(self, model, x):
         '''
@@ -37,7 +46,8 @@ class MaskedContrastiveLearningTask():
             masked_latent:      (N x D x K) Batch-size embeddings of the feature encoder output of true masked inputs
             foil_latents:       (N x D x K) Batch-size embeddings of the feature conder output of the foil inputs
         '''
-        embeddings = model.feature_encoder(x) # N x D x K
+        embeddings = model.feature_encoder(x) # N x D x K 
+                                              # forward pass of feature encoder generate intermediary embeddings
         if self.verbose:
             print('feature encoder output shape', embeddings.shape)
 
@@ -83,6 +93,7 @@ class MaskedContrastiveLearningTask():
             batched mean contrastive loss
         '''
         losses = torch.zeros((masked_latents.shape[-1],), device=self.device)
+        # contrastive learning is computed one masked sample at a time
         for k in range(masked_latents.shape[-1]):
             predicted_masked_latent = predictions[:,:,k] # N x D
             if self.verbose:
@@ -100,7 +111,7 @@ class MaskedContrastiveLearningTask():
         # return torch.mean(torch.tensor(losses))
         return torch.mean(losses)
 
-    def train(self, model, dataset_train, dataset_val, train_params={}):
+    def train(self, model, train_params={}):
         print('Training on ', self.device)
         self.train_params.update(train_params)
         num_epochs = self.train_params['num_epochs']
@@ -108,7 +119,7 @@ class MaskedContrastiveLearningTask():
         print_every = self.train_params['print_every']
 
         optimizer  = torch.optim.Adam(model.parameters())
-        dataloader_train = DataLoader(dataset_train, batch_size = batch_size, shuffle = True)
+        dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
@@ -124,17 +135,22 @@ class MaskedContrastiveLearningTask():
                     # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
                     print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
 
+                metrics = {"train/train_loss": loss.item()}
+                wandb.log(metrics)
+
                 del samples
                 del predictions
                 del masked_latents
                 del loss
 
-            self.finetune_eval_score(model, dataset_val)
+            eval_train_score, eval_test_score = self.finetune_eval_score(model)
+            wandb.log({"val/train_score": eval_train_score,
+                       "val/test_score": eval_test_score})
 
-    def finetune_eval_score(self, model, dataset_val):
+    def finetune_eval_score(self, model):
         model.eval()
         generator = torch.Generator().manual_seed(42)
-        val_train, val_test = random_split(dataset_val, [0.7, 0.3], generator=generator)
+        val_train, val_test = random_split(self.dataset_val, [0.7, 0.3], generator=generator)
         val_train_dataloader = DataLoader(val_train, batch_size = len(val_train), shuffle = True)
         val_test_dataloader = DataLoader(val_test, batch_size = len(val_test), shuffle = True)
 
@@ -146,15 +162,16 @@ class MaskedContrastiveLearningTask():
         # print(embeddings)
         clf = LinearDiscriminantAnalysis()
         clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        print('Eval train score:', clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy()))
+        train_score = clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
+        print('Eval train score:', train_score) 
 
         samples_test, labels_test = next(iter(val_test_dataloader))
         samples_test = samples_test.to(device=self.device, dtype=torch.float32)
         predictions = model(samples_test)
         embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
-        print('Eval test score:', score)
-        return score
+        test_score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
+        print('Eval test score:', test_score)
+        return train_score, test_score
 
 
 
