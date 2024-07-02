@@ -29,6 +29,137 @@ class SSLModel(ABC, nn.Module):
     def classify(self, x):
         pass
 
+class Wav2VecBrainModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.feature_encoder = self.FeatureEncoder()
+        self.context_encoder = self.TransformerLayer()
+
+    def forward(self, x):
+        x = self.feature_encoder(x)
+        x = self.context_encoder(x)
+
+        return x
+
+
+    class FeatureEncoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.K = [10, 3, 3, 3, 3, 2, 2]
+            self.S = [2, 1, 1, 1, 1, 1, 1]
+            self.conv0 = []
+            self.conv0.append(nn.Sequential(
+                nn.Conv1d(128, 512, kernel_size=(10,), stride=(4,), bias=False),
+                nn.GELU(),
+                nn.GroupNorm(512, 512, eps=1e-05, affine=True)
+            ))
+            self.conv1 = []
+            for i in range(4):
+                self.conv1.append(nn.Sequential(
+                    nn.Conv1d(512, 512, kernel_size=(3,), stride=(1,), bias=False),
+                    nn.GELU()
+                ))
+            self.conv2 = []
+            for i in range(2):
+                self.conv2.append(nn.Sequential(
+                    nn.Conv1d(512, 512, kernel_size=(2,), stride=(1,), bias=False),
+                    nn.GELU()
+                    ))
+            self.extractor = nn.Sequential(*self.conv0, *self.conv1, *self.conv2)
+            self.projection = nn.Sequential(
+                nn.LayerNorm((512,), eps=1e-05, elementwise_affine=True),
+                nn.Linear(in_features=512, out_features=768, bias=True),
+                nn.Dropout(p=0.1, inplace=False)
+            )
+
+        def receptive_field(self):
+            St = 1
+            stride = self.S[::-1]
+            for s in stride:
+                St *= s
+            R = 1
+            i = 0
+            kernel = self.K[::-1]
+            for k in kernel:
+                R = R*stride[i] + (k - stride[i])
+                i += 1
+            return R, St
+
+        def forward(self, x):
+            x = self.extractor(x)
+            x = torch.permute(x, (0,2,1))
+            return torch.permute(self.projection(x), (0,2,1))
+
+    class TransformerLayer(nn.Module):
+        class PosEmb(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = nn.Conv1d(768, 768, kernel_size=(128,), stride=(1,), padding=(64,), groups=16)
+                self.conv = nn.utils.weight_norm(self.conv, name="weight", dim=2)
+                self.activation = nn.GELU()
+            def forward(self, x):
+                x = self.conv(x)
+                x = x[:, :, :-1]
+                return torch.permute(self.activation(x), (0,2,1))
+
+        def __init__(self):
+            super().__init__()
+            self.pos_emb = self.PosEmb()
+            self.norm = nn.Sequential(
+                nn.LayerNorm((768,), eps=1e-05, elementwise_affine=True),
+                nn.Dropout(p=0.1, inplace=False)
+            )
+            self.attention = nn.Sequential(*[nn.MultiheadAttention(768, 1) for i in range(12)])
+            self.feed_forward = nn.Sequential(
+                nn.Dropout(p=0.1, inplace=False),
+                nn.Linear(in_features=768, out_features=3072, bias=True),
+                nn.GELU(),
+                nn.Linear(in_features=3072, out_features=768, bias=True),
+                nn.Dropout(p=0.1, inplace=False),
+                nn.LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+                )
+        
+        def forward(self, x):
+            x = self.pos_emb(x) + torch.permute(x, (0,2,1))
+            x = self.norm(x)
+            for i in range(12):
+                x = self.attention[i](x, x, x)[0]
+            return torch.permute(self.feed_forward(x), (0,2,1))
+
+class LacunaModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.feature_encoder = self.build_feature_encoder()
+        self.context_encoder = nn.LSTM(630, 512, 3, bidirectional= True, batch_first=True)
+
+    def build_feature_encoder(self):
+        conv0 = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size = (4, 2), stride = (4, 2)),
+            nn.LeakyReLU(),
+            nn.GroupNorm(64,64)
+        )
+        conv1 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size = (4, 2)),
+            nn.LeakyReLU(),
+            nn.GroupNorm(128,128)
+        )
+        conv2 = nn.Sequential(
+            nn.MaxPool2d((4, 2), stride = (1, 2)),
+            nn.Conv2d(128, 256, kernel_size = (3, 3)),
+            nn.MaxPool2d((4, 2), stride = (1, 2))
+        )
+        return nn.Sequential(
+            conv0,
+            conv1,
+            conv2
+        )
+
+    def forward(self, x):
+        x = self.feature_encoder(x)
+        x = torch.flatten(x, start_dim = 2)
+        x = self.context_encoder(x)
+        return x
+
 class VGGSSL(SSLModel):
     def __init__(self, model_params=None):
         super().__init__(model_params)
@@ -96,126 +227,3 @@ class VGGSSL(SSLModel):
 
     def classify(self, x):
         return self.classifier(x)
-    
-class SSLModelUtils():
-    def __init__(self,
-            model_params={
-                'model': 'VGGSSL',
-                'task': 'RP'
-            },
-            train_params={
-                'batch_size': 16,
-                'learning_rate': 0.001,
-                'optimizer': None,                    
-                'num_epochs': 500,
-                'start_from': 0,
-                'checkpoint_path': './checkpoints',
-                'log_dir': './runs',
-                'early_stopping_eps': 0.01,
-                'lr_decay_nepoch': 100,
-                'print_every': 10,
-            }):
-        self.task = model_params['task']
-        self.model = globals()[model_params['model']](model_params)
-        self.__init_train(train_params) # initialize training paramters
-    
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    def __init_train(self, custom_params):
-        '''
-        Initialize training parameters
-        '''
-        train_params = {
-            'batch_size': 16,
-            'learning_rate': 0.001,
-            'optimizer': None,                    
-            'num_epochs': 500,
-            'start_from': 0,
-            'checkpoint_path': './checkpoints',
-            'log_dir': './runs',
-            'early_stopping_eps': 0.01,
-            'lr_decay_nepoch': 100,
-            'print_every': 10,
-        }
-        train_params.update(custom_params)
-        self.train_params = train_params
-
-        if not os.path.exists(self.train_params['checkpoint_path']):
-            os.mkdir(self.train_params['checkpoint_path'])
-        if not os.path.exists(self.train_params['log_dir']):
-            os.mkdir(self.train_params['log_dir'])
-        if not self.train_params['optimizer']:
-            self.train_params['optimizer'] = torch.optim.Adamax(self.model.parameters(), lr = self.train_params['learning_rate'])
-    
-    def get_dataloader(self, data, shuffle=True):
-        if type(data) == list:
-            X = [i[0] for i in data]
-            Y = [i[1] for i in data]
-            loader = DataLoader(BaseDataset(X, Y), batch_size = self.train_params['batch_size'], shuffle = shuffle)
-        elif isinstance(data, Dataset):
-            loader = DataLoader(data, batch_size = self.train_params['batch_size'], shuffle = shuffle)
-        elif type(data) == DataLoader:
-            loader = data
-        else:
-            raise ValueError('Not accepted dataset type')
-        return loader
-
-    def forward(self, x):
-        if self.model.task == "CPC":
-            # x: N x 3 (context, future, negative) x samples x R x G x B
-            embeds = []
-            for n in range(x.shape[0]): # for each batch sample
-                tup = []
-                for samples in x[n]:
-                    tup.append([self.encoder(sample) for sample in samples])
-                embeds.append(tup)
-            
-            # embeds: N x 3 x samples x 4096 (samples are different between context, future, and negative
-            context = self.modelgAR(embeds[:,0,:,:]) # N x 100
-            
-            z = [(context[n], embeds[n,1,:,:], embeds[n,2,:,:]) for n in range(len(embeds))]
-        else:
-            # If task == RP, embeds is a list/tuple of two embeddings
-            #    task == TS, embeds is a list/tuple of three embeddings
-
-            # indexing keeping dimension: https://discuss.pytorch.org/t/solved-simple-question-about-keep-dim-when-slicing-the-tensor/9280
-            embeds = [self.model.encode(x[:,i:i+1]) for i in range(x.shape[1])] # x: N (Batch_size) x Sample_size x F
-            if self.model.task == "RP":
-                g = torch.abs(embeds[0] - embeds[1])
-            elif self.model.task == "TS":
-                g = torch.cat([torch.abs(embeds[0] - embeds[1]), torch.abs(embeds[1] - embeds[2])], dim=1)
-            z = self.model.classify(g)
-        
-            del g
-            del embeds
-        return z
-    
-    def train(self, dataloader):
-        params = SimpleNamespace(**self.train_params)
-        writer = SummaryWriter(params.log_dir)
-        dataloader = self.get_dataloader(dataloader)
-
-        self.model.to(device=self.device)
-        self.model.train()
-        for e in range(params.num_epochs):
-            for t, (sample, label) in enumerate(dataloader):
-                label = label.to(device=self.device, dtype=torch.long)
-                sample = sample.to(device=self.device, dtype=torch.float32) # torch model weights is float32 by default. float64 would not work
-                logit = self.forward(sample)
-                
-                params.optimizer.zero_grad()
-                loss =  F.cross_entropy(logit, label)
-                loss.backward()
-                params.optimizer.step()
-
-                if t % params.print_every == 0:
-                    writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
-                    print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
-
-                del label
-                del logit
-                del loss
-
-            # Save model every print_every epochs
-            if e > 0 and e % params.print_every == 0:
-                torch.save(self.model.state_dict(), f"{params.checkpoint_path}/epoch_{e}")
