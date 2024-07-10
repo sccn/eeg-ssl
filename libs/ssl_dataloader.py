@@ -27,8 +27,8 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
                 "sfreq": 128,                                         # sampling rate
             },
             is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
-            seed=None):                                               # numpy random seed
-        np.random.seed(seed)
+            random_seed=None):                                               # numpy random seed
+        np.random.seed(random_seed)
         self.basedir = data_dir
         self.files = np.array([i for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
         self.subjects = np.array([i.split('_')[0] for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
