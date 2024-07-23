@@ -9,6 +9,7 @@ import os
 import mne
 import wandb
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+import itertools
 
 class MaskedContrastiveLearningTask():
     def __init__(self, 
@@ -173,6 +174,17 @@ class MaskedContrastiveLearningTask():
         print('Eval test score:', test_score)
         return train_score, test_score
 
+import torch
+from torch.nn import functional as F
+import torch.nn as nn
+import numpy as np
+from torch.utils.data import Dataset, DataLoader, random_split
+from tqdm import tqdm
+from joblib import Parallel, delayed
+import os
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+import itertools
+
 class RelativePositioningTask():
     def __init__(self,
                 dataset: torch.utils.data.Dataset,
@@ -201,6 +213,8 @@ class RelativePositioningTask():
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
+        self.w = nn.Parameter(torch.randn(11, requires_grad=True))
+        self.w0 = nn.Parameter(torch.randn(1, requires_grad=True))
 
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
@@ -255,18 +269,21 @@ class RelativePositioningTask():
         for i in range(samples.shape[0]):
           embeddings.append(model.feature_encoder(samples[i][:, 0]))
 
-        predictions = []
+        differences = []
 
         for i in range(len(embeddings)):
-          predictions.append(model.classify(embeddings[i]))
+          differences.append(torch.abs(embeddings[i][0] - embeddings[i][1]))
 
-        predictions = torch.stack(predictions)
+        differences = torch.stack(differences)
         labels = labels.long()
 
-        return predictions, labels
+        return differences, labels
 
-    def loss(self, predictions, labels):
-        return F.cross_entropy(predictions, labels)
+    def loss(self, differences, labels):
+        linear_combination = torch.matmul(differences, self.w) + self.w0
+        # Calculate the loss
+        loss = torch.log(1 + torch.exp(-labels * linear_combination))
+        return loss.mean()
 
     def train(self, model, train_params={}):
         print('Training on ', self.device)
@@ -275,15 +292,16 @@ class RelativePositioningTask():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-        optimizer  = torch.optim.Adam(model.parameters())
+        params = itertools.chain(model.parameters(), [self.w, self.w0])
+        optimizer  = torch.optim.Adam(params)
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
             for t, (samples, _) in enumerate(dataloader_train):
                 samples = samples.to(device=self.device, dtype=torch.float32)
-                predictions, labels = self.forward(model, samples)
-                loss = self.loss(predictions, labels)
+                differences, labels = self.forward(model, samples)
+                loss = self.loss(differences, labels)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -295,7 +313,7 @@ class RelativePositioningTask():
                 metrics = {"train/train_loss": loss.item()}
 
                 del samples
-                del predictions
+                del differences
                 del labels
                 del loss
 
@@ -326,7 +344,7 @@ class RelativePositioningTask():
         test_score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
         print('Eval test score:', test_score)
         return train_score, test_score
-
+        
 class TemporalShufflingTask():
     def __init__(self,
                 dataset: torch.utils.data.Dataset,
@@ -357,6 +375,8 @@ class TemporalShufflingTask():
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
+        self.w = nn.Parameter(torch.randn(22, requires_grad=True))
+        self.w0 = nn.Parameter(torch.randn(1, requires_grad=True))
 
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
@@ -391,18 +411,21 @@ class TemporalShufflingTask():
         for i in range(samples.shape[0]):
           embeddings.append(model.feature_encoder(samples[i][:, 0]))
 
-        predictions = []
+        differences = []
 
         for i in range(len(embeddings)):
-          predictions.append(model.classify(embeddings[i]))
+          differences.append(torch.cat((torch.abs(embeddings[i][0] - embeddings[i][1]), torch.abs(embeddings[i][1] - embeddings[i][2])), dim = 1))
 
-        predictions = torch.stack(predictions)
+        differences = torch.stack(differences)
         labels = labels.long()
 
-        return predictions, labels
+        return differences, labels
 
-    def loss(self, predictions, labels):
-        return F.cross_entropy(predictions, labels)
+    def loss(self, differences, labels):
+        linear_combination = torch.matmul(differences, self.w) + self.w0
+        # Calculate the loss
+        loss = torch.log(1 + torch.exp(-labels * linear_combination))
+        return loss.mean()
 
     def train(self, model, train_params={}):
         print('Training on ', self.device)
@@ -411,15 +434,16 @@ class TemporalShufflingTask():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-        optimizer  = torch.optim.Adam(model.parameters())
+        params = itertools.chain(model.parameters(), [self.w, self.w0])
+        optimizer  = torch.optim.Adam(params)
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
             for t, (samples, _) in enumerate(dataloader_train):
                 samples = samples.to(device=self.device, dtype=torch.float32)
-                predictions, labels = self.forward(model, samples)
-                loss = self.loss(predictions, labels)
+                differences, labels = self.forward(model, samples)
+                loss = self.loss(differences, labels)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -431,7 +455,7 @@ class TemporalShufflingTask():
                 metrics = {"train/train_loss": loss.item()}
 
                 del samples
-                del predictions
+                del differences
                 del labels
                 del loss
 
