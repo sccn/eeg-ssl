@@ -174,17 +174,6 @@ class MaskedContrastiveLearningTask():
         print('Eval test score:', test_score)
         return train_score, test_score
 
-import torch
-from torch.nn import functional as F
-import torch.nn as nn
-import numpy as np
-from torch.utils.data import Dataset, DataLoader, random_split
-from tqdm import tqdm
-from joblib import Parallel, delayed
-import os
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-import itertools
-
 class RelativePositioningTask():
     def __init__(self,
                 dataset: torch.utils.data.Dataset,
@@ -213,13 +202,20 @@ class RelativePositioningTask():
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
-        self.w = nn.Parameter(torch.randn(11, requires_grad=True))
-        self.w0 = nn.Parameter(torch.randn(1, requires_grad=True))
-
+        self.linear_ff = nn.Linear(768*11, 200)
+        self.loss_linear = nn.Linear(200, 1)
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
         self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
 
+    def gRP(self, embeddings):
+        differences = []
+
+        for i in range(len(embeddings)):
+          differences.append(torch.abs(embeddings[i][0] - embeddings[i][1]))
+        
+        return torch.stack(differences)
+    
     def forward(self, model, x):
         samples = []
         labels = []
@@ -267,20 +263,15 @@ class RelativePositioningTask():
         embeddings = []
 
         for i in range(samples.shape[0]):
-          embeddings.append(model.feature_encoder(samples[i][:, 0]))
+          embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(samples[i][:, 0]), start_dim = 1)))
 
-        differences = []
-
-        for i in range(len(embeddings)):
-          differences.append(torch.abs(embeddings[i][0] - embeddings[i][1]))
-
-        differences = torch.stack(differences)
+        differences = self.gRP(embeddings)
         labels = labels.long()
 
         return differences, labels
 
     def loss(self, differences, labels):
-        linear_combination = torch.matmul(differences, self.w) + self.w0
+        linear_combination = self.loss_linear(differences)
         # Calculate the loss
         loss = torch.log(1 + torch.exp(-labels * linear_combination))
         return loss.mean()
@@ -292,8 +283,7 @@ class RelativePositioningTask():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-        params = itertools.chain(model.parameters(), [self.w, self.w0])
-        optimizer  = torch.optim.Adam(params)
+        optimizer  = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()) + list(self.linear_ff.parameters()))
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
@@ -375,13 +365,21 @@ class TemporalShufflingTask():
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
-        self.w = nn.Parameter(torch.randn(22, requires_grad=True))
-        self.w0 = nn.Parameter(torch.randn(1, requires_grad=True))
+        self.linear_ff = nn.Linear(768*11, 200)
+        self.loss_linear = nn.Linear(400, 1)
 
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
         self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
 
+    def gTS(self, embeddings):
+        differences = []
+
+        for i in range(len(embeddings)):
+          differences.append(torch.cat((torch.abs(embeddings[i][0] - embeddings[i][1]), torch.abs(embeddings[i][1] - embeddings[i][2])), dim = 0))
+
+        return torch.stack(differences)
+    
     def forward(self, model, x):
         samples = []
         labels = []
@@ -409,20 +407,15 @@ class TemporalShufflingTask():
         embeddings = []
 
         for i in range(samples.shape[0]):
-          embeddings.append(model.feature_encoder(samples[i][:, 0]))
+          embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(samples[i][:, 0]), start_dim = 1)))
 
-        differences = []
-
-        for i in range(len(embeddings)):
-          differences.append(torch.cat((torch.abs(embeddings[i][0] - embeddings[i][1]), torch.abs(embeddings[i][1] - embeddings[i][2])), dim = 1))
-
-        differences = torch.stack(differences)
+        differences = self.gTS(embeddings)
         labels = labels.long()
 
         return differences, labels
 
     def loss(self, differences, labels):
-        linear_combination = torch.matmul(differences, self.w) + self.w0
+        linear_combination = self.loss_linear(differences)
         # Calculate the loss
         loss = torch.log(1 + torch.exp(-labels * linear_combination))
         return loss.mean()
@@ -434,8 +427,7 @@ class TemporalShufflingTask():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-        params = itertools.chain(model.parameters(), [self.w, self.w0])
-        optimizer  = torch.optim.Adam(params)
+        optimizer  = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()) + list(self.linear_ff.parameters()))
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
