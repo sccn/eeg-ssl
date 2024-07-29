@@ -8,12 +8,20 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader, random_split
 import os
 
-import torch.nn as nn
-import torch
+class PosEmb(nn.Module):
+  def __init__(self):
+    super(PosEmb, self).__init__()
+    self.conv = nn.Conv1d(768, 768, kernel_size=(128,), stride=(1,), padding=(64,), groups=16)
+    self.conv = nn.utils.weight_norm(self.conv, name="weight", dim=2)
+    self.activation = nn.GELU()
+  def forward(self, x):
+    x = self.conv(x)
+    x = x[:, :, :-1]
+    return torch.permute(self.activation(x), (0,2,1))
 
 class Wav2Vec2(nn.Module):
   def __init__(self, K, S):
-    super(FeatureEncoder, self).__init__()
+    super(Wav2Vec2, self).__init__()
     self.conv0 = []
     self.K = K
     self.S = S
