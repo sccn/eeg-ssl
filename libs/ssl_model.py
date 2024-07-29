@@ -8,6 +8,88 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader, random_split
 import os
 
+import torch.nn as nn
+import torch
+
+class Wav2Vec2(nn.Module):
+  def __init__(self, K, S, class_dim):
+    super(FeatureEncoder, self).__init__()
+    self.conv0 = []
+    self.K = K
+    self.S = S
+    self.conv0.append(nn.Sequential(
+        nn.Conv1d(128, 512, kernel_size=(self.K[0],), stride=(self.S[0],), bias=False),
+        nn.GELU(),
+        nn.GroupNorm(512, 512, eps=1e-05, affine=True)
+    ))
+    self.conv1 = []
+    for i in range(4):
+      self.conv1.append(nn.Sequential(
+          nn.Conv1d(512, 512, kernel_size=(self.K[1],), stride=(self.S[1],), bias=False),
+          nn.GELU()
+      ))
+    self.conv2 = []
+    for i in range(2):
+      self.conv2.append(nn.Sequential(
+          nn.Conv1d(512, 512, kernel_size=(self.K[5],), stride=(self.S[5],), bias=False),
+          nn.GELU()
+        ))
+    self.extractor = nn.Sequential(*self.conv0, *self.conv1, *self.conv2)
+    self.projection = nn.Sequential(
+        nn.LayerNorm((512,), eps=1e-05, elementwise_affine=True),
+        nn.Linear(in_features=512, out_features=768, bias=True),
+        nn.Dropout(p=0.1, inplace=False)
+    )
+    self.pos_emb = PosEmb()
+    self.norm = nn.Sequential(
+        nn.LayerNorm((768,), eps=1e-05, elementwise_affine=True),
+        nn.Dropout(p=0.1, inplace=False)
+    )
+    self.attention = []
+    for i in range(12):
+      self.attention.append(nn.MultiheadAttention(768, 1))
+    self.feed_forward = nn.Sequential(
+        nn.Dropout(p=0.1, inplace=False),
+        nn.Linear(in_features=768, out_features=3072, bias=True),
+        nn.GELU(),
+        nn.Linear(in_features=3072, out_features=768, bias=True),
+        nn.Dropout(p=0.1, inplace=False),
+        nn.LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+        )
+
+
+  def receptive_field(self):
+    St = 1
+    stride = self.S[::-1]
+    for s in stride:
+      St *= s
+    R = 1
+    i = 0
+    kernel = self.K[::-1]
+    for k in kernel:
+      R = R*stride[i] + (k - stride[i])
+      i += 1
+    return R, St
+
+  def feature_encoder(self, x):
+    x = self.extractor(x)
+    x = torch.permute(x, (0,2,1))
+    return torch.permute(self.projection(x), (0,2,1))
+
+  def context_encoder(self, x):
+    x = self.pos_emb(x) + torch.permute(x, (0,2,1))
+    x = self.norm(x)
+    for i in range(12):
+      x = self.attention[i](x, x, x)[0]
+    return torch.permute(self.feed_forward(x), (0,2,1))
+
+  def forward(self, x):
+    x = self.feature_encoder(x)
+    x = torch.flatten(x, start_dim = 2)
+    x = self.context_encoder(x)
+    return x
+
+
 class SSLModel(ABC, nn.Module):
     def __init__(self, model_params=None):
         super().__init__()
