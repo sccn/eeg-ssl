@@ -6,13 +6,12 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from tqdm import tqdm
 from joblib import Parallel, delayed
 import os
-import mne
-import wandb
+#import wandb
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 import itertools
 
 class MaskedContrastiveLearningTask():
-    def __init__(self, 
+    def __init__(self,
                 dataset: torch.utils.data.Dataset,
                 task_params={
                     'mask_prob': 0.5
@@ -47,7 +46,7 @@ class MaskedContrastiveLearningTask():
             masked_latent:      (N x D x K) Batch-size embeddings of the feature encoder output of true masked inputs
             foil_latents:       (N x D x K) Batch-size embeddings of the feature conder output of the foil inputs
         '''
-        embeddings = model.feature_encoder(x) # N x D x K 
+        embeddings = model.feature_encoder(x) # N x D x K
                                               # forward pass of feature encoder generate intermediary embeddings
         if self.verbose:
             print('feature encoder output shape', embeddings.shape)
@@ -62,7 +61,7 @@ class MaskedContrastiveLearningTask():
         if self.verbose:
             print('masked indices shape', masked_indices.shape)
         # replace the selected indices with the masked vector embedding
-        true_masked_embeddings = embeddings[:,:,masked_indices] # N x D x K # .detach().clone() 
+        true_masked_embeddings = embeddings[:,:,masked_indices] # N x D x K # .detach().clone()
         if self.verbose:
             print('true masked embeddings shape', true_masked_embeddings.shape)
 
@@ -79,7 +78,7 @@ class MaskedContrastiveLearningTask():
 
         # context encoder_outputs of the masked input
         predicted_masked_latent = context_encoder_outputs[:,:,masked_indices] # N x D x K
-        if self.verbose: 
+        if self.verbose:
             print('predicted context encoder outputs shape', predicted_masked_latent.shape)
         return predicted_masked_latent, true_masked_embeddings
 
@@ -89,7 +88,7 @@ class MaskedContrastiveLearningTask():
         @parameter
             predictions:         (N x D x K) Batch-size embeddings of the model's guess for masked inputs
             masked_latents:      (N x D x K) Batch-size embeddings of the feature encoder output of masked inputs
-        
+
         @return
             batched mean contrastive loss
         '''
@@ -137,7 +136,6 @@ class MaskedContrastiveLearningTask():
                     print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
 
                 metrics = {"train/train_loss": loss.item()}
-                wandb.log(metrics)
 
                 del samples
                 del predictions
@@ -145,8 +143,6 @@ class MaskedContrastiveLearningTask():
                 del loss
 
             eval_train_score, eval_test_score = self.finetune_eval_score(model)
-            wandb.log({"val/train_score": eval_train_score,
-                       "val/test_score": eval_test_score})
 
     def finetune_eval_score(self, model):
         model.eval()
@@ -164,7 +160,7 @@ class MaskedContrastiveLearningTask():
         clf = LinearDiscriminantAnalysis()
         clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
         train_score = clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        print('Eval train score:', train_score) 
+        print('Eval train score:', train_score)
 
         samples_test, labels_test = next(iter(val_test_dataloader))
         samples_test = samples_test.to(device=self.device, dtype=torch.float32)
