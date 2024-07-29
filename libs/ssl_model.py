@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch
 
 class Wav2Vec2(nn.Module):
-  def __init__(self, K, S, class_dim):
+  def __init__(self, K, S):
     super(FeatureEncoder, self).__init__()
     self.conv0 = []
     self.K = K
