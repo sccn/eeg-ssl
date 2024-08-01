@@ -1,15 +1,16 @@
 import os
 
 import numpy as np
-import scipy.io
 import mne
 import torch
 from tqdm import tqdm
 import hashlib
-from abc import ABC, abstractmethod
+# from abc import ABC, abstractmethod
 import pickle
 from joblib import Parallel, delayed
 import pandas as pd
+from signalstore_data_utils import SignalstoreHBN
+import time
 
 verbose = False
 class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
@@ -225,3 +226,95 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx], self.y_data[idx]
+
+class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
+    def __init__(self,
+            metadata={
+                'filepath': '/home/dung/subjects.csv', # path to subject metadata csv file
+                'index_column': 'participant_id',      # index column of the file corresponding to subject name
+                'key': 'gender',                       # which metadata we want to use for finetuning
+            },                 
+            dataset_name='healthy_brain_network',      # signalstore dataset name
+            subjects:list=None,                                       # subjects to use, default to all
+            n_subjects=None,                                          # number of subjects to pick, default all
+            task_params={
+                "window": 2,                                          # EEG window length in seconds
+            },
+            is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
+            random_seed=None):                                               # numpy random seed
+        np.random.seed(random_seed)
+        self.signalstore = SignalstoreHBN(dataset_name)
+        self.metadata_info= metadata
+        self.subjects = subjects
+        self.task_params = task_params
+
+        self.data = None
+        self.start_time = time.time()
+
+        self.__get_data()
+        self.__process_data()
+
+        # enforcing data order for uniform array computation
+        self.data = self.data.transpose('sample', 'channel', 'time')
+
+        # set metadata
+        self.sfreq = self.data.attrs['sampling_frequency']
+        print('Data shape:', self.data.shape)
+
+    def __len__(self):
+        return self.data.sample.shape
+
+    def __getitem__(self, idx):
+        sample = self.data.isel(sample=idx)
+        return sample.to_numpy(), sample.attrs
+    
+    def __get_data(self):
+        print('Retrieving data...')
+        ds = None
+
+        with self.signalstore.uow as uow:
+            for subj in self.subjects:
+                recordings = self.signalstore.query_data({'subject': subj})
+                print('Took %s second(s)' % (time.time() - self.start_time))
+
+                print('Constructing dataset...')
+                for r in recordings:
+                    record = uow.data.get(r['schema_ref'], r['data_name'])
+                    if ds is None:
+                        ds = record.to_dataset()
+                        ds.attrs['sampling_frequency'] = record.attrs['sampling_frequency']
+                    for record in recordings:
+                        try:
+                            ds[f"{record['schema_ref']}__{record['data_name']}"] = uow.data.get(record['schema_ref'], record['data_name'])
+                        except:
+                            continue
+                print('Took %s second(s)' % (time.time() - self.start_time))
+            
+        self.data = ds
+
+
+    def __process_data(self):
+        print('Processing data...')
+        window = self.task_params['window']
+        ds = self.data
+
+        # segment data into EEG windows
+        ds_coarsen = ds.coarsen(time=ds.attrs['sampling_frequency']*window, boundary='trim').construct(time=('window', 'time'), keep_attrs=True)
+        ds2 = ds_coarsen.to_dataarray()
+        ds3 = ds2.stack(sample=("variable", "window"))
+        self.data = ds3
+        print('Took %s second(s)' % (time.time() - self.start_time))
+
+
+    def get_metadata(self, key):
+        '''
+        Extract metadata of samples
+        '''
+        subj_info = pd.read_csv(self.metadata_info['filepath'], index_col=self.metadata_info['index_column']) # master sheet containing all subjects
+        if key not in subj_info:
+            print('Metadata key not found')
+            return 
+        else:
+            metadata = [subj_info[key][subj] for subj in self.subjects]
+            return metadata
+
