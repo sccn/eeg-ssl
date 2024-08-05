@@ -11,6 +11,7 @@ import argparse
 
 def run_experiment(args):
     if not args.debug:
+        wandb.login()
         wandb.init(
             # Set the project where this run will be logged
             project="hbn-ssl", 
@@ -65,7 +66,7 @@ def main():
     parser.add_argument('--data', type=str, default="/mnt/nemar/child-mind-rest", help="Path to data directory (Default: /mnt/nemar/child-mind-rest)")
     parser.add_argument('--verbose', action='store_true', help="Increase output verbosity")
     parser.add_argument('--seed', type=int, default=9, help="Random seed (default: 9)")
-    parser.add_argument('--nsubjects', type=int, default=50, help="Number of subject recordings to be used for dataset (default: 50)")
+    parser.add_argument('--nsubjects', type=int, default=30, help="Number of subject recordings to be used for dataset (default: 50)")
     parser.add_argument('--window', type=int, default=5, help="EEG window size in second(s) (default: 50)")
     parser.add_argument('--mask_prob', type=float, default=0.3, help="Masking probability (default: 0.3)")
     parser.add_argument('--epochs', type=int, default=10, help="Number of training epochs (default: 10)")
@@ -76,7 +77,6 @@ def main():
     # Parse the arguments
     args = parser.parse_args()
 
-    wandb.login()
     run_experiment(args)
 
 if __name__ == "__main__":
