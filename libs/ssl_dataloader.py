@@ -9,15 +9,20 @@ import hashlib
 import pickle
 from joblib import Parallel, delayed
 import pandas as pd
-from signalstore_data_utils import SignalstoreHBN
+from libs.signalstore_data_utils import SignalstoreHBN
 import time
+try:
+    from importlib import resources as impresources
+except ImportError:
+    # Try backported to PY<37 `importlib_resources`.
+    import importlib_resources as impresources
 
 verbose = False
 class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
     def __init__(self,
             data_dir='/mnt/nemar/child-mind-rest', # location of asr cleaned data 
             metadata={
-                'filepath': '/home/dung/subjects.csv', # path to subject metadata csv file
+                'file': (impresources.files('libs') / 'subjects.csv'),  # path to subject metadata csv file
                 'index_column': 'participant_id',      # index column of the file corresponding to subject name
                 'key': 'gender',                       # which metadata we want to use for finetuning
             },                 
@@ -79,7 +84,9 @@ class MaskedContrastiveLearningDataset(torch.utils.data.Dataset):
     Extract metadata of samples
     '''
     def get_metadata(self, key):
-        subj_info = pd.read_csv(self.metadata_info['filepath'], index_col=self.metadata_info['index_column']) # master sheet containing all subjects
+        with open(self.metadata_info['file'], 'rb') as f:  # or "rt" as text file with universal newlines
+            subj_info = pd.read_csv(f, index_col=self.metadata_info['index_column']) # master sheet containing all subjects
+        # subj_info = pd.read_csv(self.metadata_info['filepath'], index_col=self.metadata_info['index_column']) # master sheet containing all subjects
         if key not in subj_info:
             print('Metadata key not found')
             return 
@@ -252,7 +259,9 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
         self.start_time = time.time()
 
         self.__get_data()
+        self.start_time = time.time()
         self.__process_data()
+        self.start_time = time.time()
 
         # enforcing data order for uniform array computation
         self.data = self.data.transpose('sample', 'channel', 'time')
@@ -304,6 +313,7 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
         ds3 = ds2.stack(sample=("variable", "window"))
         self.data = ds3
         print('Took %s second(s)' % (time.time() - self.start_time))
+        self.start_time = time.time()
 
 
     def get_metadata(self, key):

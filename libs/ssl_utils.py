@@ -22,6 +22,7 @@ class MaskedContrastiveLearningTask():
                     'print_every': 10
                 },
                 random_seed=9,
+                debug=True,
                 verbose=False
         ):
         torch.manual_seed(random_seed)
@@ -32,6 +33,7 @@ class MaskedContrastiveLearningTask():
         self.train_params = train_params
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.debug  = debug
         self.verbose=verbose
 
     def train_test_split(self):
@@ -150,6 +152,10 @@ class MaskedContrastiveLearningTask():
                 del loss
 
             eval_train_score, eval_test_score = self.finetune_eval_score(model)
+            if t % print_every == 0:
+                # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
+                print('Epoch %d, Iteration %d, val/train = %.4f, val/test = %.4f' % (e, t, eval_train_score, eval_test_score))
+
             if wandb.run is not None:
                 wandb.log({"val/train_score": eval_train_score,
                            "val/test_score": eval_test_score})

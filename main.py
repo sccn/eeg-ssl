@@ -10,48 +10,49 @@ from sklearn.model_selection import train_test_split
 import argparse
 
 def run_experiment(args):
-    wandb.init(
-        # Set the project where this run will be logged
-        project="hbn-ssl", 
-        # We pass a run name (otherwise it’ll be randomly assigned, like sunshine-lollypop-10)
-        #   name=f"experiment_{run}", 
-        # Track hyperparameters and run metadata
-        config={
-            "seed": args.seed,
-            "n_subjects": args.nsubjects,
-            "window": args.window,
-            'mask_prob': args.mask_prob,
-            'batch_size': args.batch_size,
-            'epochs': args.epochs
-        })
-    config = wandb.config
+    if not args.debug:
+        wandb.init(
+            # Set the project where this run will be logged
+            project="hbn-ssl", 
+            # We pass a run name (otherwise it’ll be randomly assigned, like sunshine-lollypop-10)
+            #   name=f"experiment_{run}", 
+            # Track hyperparameters and run metadata
+            config={
+                "seed": args.seed,
+                "nsubjects": args.nsubjects,
+                "window": args.window,
+                'mask_prob': args.mask_prob,
+                'batch_size': args.batch_size,
+                'epochs': args.epochs
+            })
     SFREQ = 128
     dataset = MaskedContrastiveLearningDataset(
         data_dir = args.data,
         # subjects = subj_train.tolist(),
-        n_subjects=config.n_subjects,
+        n_subjects=args.nsubjects,
         x_params = {
             'sfreq': SFREQ,
-            'window': config.window
+            'window': args.window
         },
-        random_seed = config.seed
+        random_seed = args.seed
     )
     print('Length of dataset', len(dataset))
     print('X dim', dataset[0][0].shape)
     print('Y', dataset[0][1])
-    eeg_utils.plot_raw_eeg(dataset[5][0])
+    # eeg_utils.plot_raw_eeg(dataset[5][0]) # ERROR
 
     model = Wav2VecBrainModel()
     task = MaskedContrastiveLearningTask(dataset, 
             task_params={
-                'mask_prob': config.mask_prob
+                'mask_prob': args.mask_prob
             },
             train_params={
-                'num_epochs': config.epochs,
-                'batch_size': config.batch_size,
+                'num_epochs': args.epochs,
+                'batch_size': args.batch_size,
                 'print_every': args.print_every
             },
-            random_seed=config.seed
+            random_seed=args.seed,
+            debug=args.debug
     )
     trained_model = task.train(model)
 
@@ -70,6 +71,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=10, help="Number of training epochs (default: 10)")
     parser.add_argument('--batch_size', type=int, default=128, help="Batch size (default: 128)")
     parser.add_argument('--print_every', type=int, default=100, help="Display model performance every # training step (default: 100)")
+    parser.add_argument('--debug', type=bool, default=True, help="Whether running in debug mode without wandb tracking")
 
     # Parse the arguments
     args = parser.parse_args()
