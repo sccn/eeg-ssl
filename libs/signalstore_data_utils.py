@@ -22,6 +22,7 @@ class SignalstoreHBN():
                  data_path='/mnt/nemar/openneuro/ds004186',                                     # path to raw data
                  cache_path='/mnt/nemar/dtyoung/eeg-ssl-data/signalstore/hbn',                  # path where signalstore netCDF files are stored
                  dataset_name="healthy_brain_network",                                          # TODO right now this is resting state data --> rename it to differentiate between tasks later
+                 dbconnectionstring="mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.2.15"""
                  ):
         filesystem = LocalFileSystem()
         # tmp_dir = TemporaryDirectory()
@@ -30,6 +31,7 @@ class SignalstoreHBN():
         # Create data storage location
         self.dataset_name = dataset_name
         self.data_path = Path(data_path)
+        self.cache_path = Path(cache_path) / dataset_name
 
         # Create a directory for the dataset
         store_path = Path(cache_path)
@@ -40,9 +42,9 @@ class SignalstoreHBN():
             store_path,
             filesystem=filesystem
         )
-        uri = "mongodb+srv://dtyoung112:XbiUEbzmCacjafGu@cluster0.6jtigmc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+        # uri = "mongodb+srv://dtyoung112:XbiUEbzmCacjafGu@cluster0.6jtigmc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # mongodb free atlas server
         # Create a new client and connect to the server
-        client = MongoClient(uri)
+        client = MongoClient(dbconnectionstring)
         memory_store = {}
         self.uow_provider = UnitOfWorkProvider(
             mongo_client=client,
@@ -119,8 +121,6 @@ class SignalstoreHBN():
                         print('channel coords file len', len(channel_coords))
                         # get channel names from channel_coords
                         channel_names = channel_coords['name'].values
-                        print('channel coords names', channel_names)
-                        print(len(channel_names))
                         eeg_xarray = xr.DataArray(
                             data=eeg_data,
                             dims=['channel','time'],
@@ -144,13 +144,18 @@ class SignalstoreHBN():
         for eeg_xarray in self.load_eeg_data_from_bids(self.data_path):
             with self.uow_provider(self.dataset_name) as uow:
                 query = {
-                    "schema_ref": "eeg_signal",
+                    "schema_ref": eeg_xarray.attrs['schema_ref'],
                     "data_name": eeg_xarray.attrs['data_name']
                 }
                 sessions = uow.data.find(query)
                 if len(sessions) == 0:
                     print('adding data', eeg_xarray.attrs['data_name'])
-                    uow.data.add(eeg_xarray)
+                    if self.__cache_exist(eeg_xarray.attrs['schema_ref'] + '__' + eeg_xarray.attrs['data_name']):
+                        attrs = eeg_xarray.attrs
+                        attrs['has_file'] = True
+                        uow.data.add(attrs)
+                    else:
+                        uow.data.add(eeg_xarray)
                     uow.commit()
 
     def remove_all(self):
@@ -165,13 +170,18 @@ class SignalstoreHBN():
             
             print('Verifying deletion job. Dataset length: ', len(uow.data.find({})))
 
-    def query_data(self, query={}):
+    def query_data(self, query={}, get_data=True):
         with self.uow_provider(self.dataset_name) as uow:
-            sessions = uow.data.find(query)
-            print(f'Found {len(sessions)} records')
-            
-            return sessions
+            sessions = uow.data.find(query, get_data=get_data)
+            if sessions:
+                print(f'Found {len(sessions)} records')
+                return sessions
+            else:
+                return []
 
+    def __cache_exist(self, id):
+        print(self.cache_path / (id+".nc"))
+        return os.path.exists(self.cache_path / (id+".nc"))
 
 if __name__ == "__main__":
     sstore_hbn = SignalstoreHBN()
