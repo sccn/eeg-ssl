@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 import os
 from os import scandir, walk
-from signalstore import UnitOfWorkProvider
+from signalstore.signalstore import UnitOfWorkProvider
 # from mongomock import MongoClient
 from pymongo.mongo_client import MongoClient
 from fsspec.implementations.local import LocalFileSystem
@@ -22,7 +22,7 @@ class SignalstoreHBN():
                  data_path='/mnt/nemar/openneuro/ds004186',                                     # path to raw data
                  cache_path='/mnt/nemar/dtyoung/eeg-ssl-data/signalstore/hbn',                  # path where signalstore netCDF files are stored
                  dataset_name="healthy_brain_network",                                          # TODO right now this is resting state data --> rename it to differentiate between tasks later
-                 dbconnectionstring="mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.2.15"""
+                 dbconnectionstring="mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.2.15"
                  ):
         filesystem = LocalFileSystem()
         # tmp_dir = TemporaryDirectory()
@@ -44,6 +44,8 @@ class SignalstoreHBN():
         )
         # uri = "mongodb+srv://dtyoung112:XbiUEbzmCacjafGu@cluster0.6jtigmc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # mongodb free atlas server
         # Create a new client and connect to the server
+        if not dbconnectionstring:
+            dbconnectionstring = 'mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.2.15'
         client = MongoClient(dbconnectionstring)
         memory_store = {}
         self.uow_provider = UnitOfWorkProvider(
@@ -170,9 +172,9 @@ class SignalstoreHBN():
             
             print('Verifying deletion job. Dataset length: ', len(uow.data.find({})))
 
-    def query_data(self, query={}, get_data=True):
+    def query_data(self, query={}, validate=False, get_data=False):
         with self.uow_provider(self.dataset_name) as uow:
-            sessions = uow.data.find(query, get_data=get_data)
+            sessions = uow.data.find(query, validate=validate, get_data=get_data)
             if sessions:
                 print(f'Found {len(sessions)} records')
                 return sessions

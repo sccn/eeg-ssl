@@ -5,11 +5,14 @@ import mne
 import torch
 from tqdm import tqdm
 import hashlib
+from pathlib import Path
+import csv
 # from abc import ABC, abstractmethod
 import pickle
 from joblib import Parallel, delayed
 import pandas as pd
 from libs.signalstore_data_utils import SignalstoreHBN
+import xarray as xr
 import time
 try:
     from importlib import resources as impresources
@@ -242,18 +245,25 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
                 'key': 'gender',                       # which metadata we want to use for finetuning
             },                 
             dataset_name='healthy_brain_network',      # signalstore dataset name
-            subjects:list=None,                                       # subjects to use, default to all
-            n_subjects=None,                                          # number of subjects to pick, default all
+            subjects:list=[],                                       # subjects to use, default to all
+            n_subjects=-1,                                          # number of subjects to pick, default all
             task_params={
                 "window": 2,                                          # EEG window length in seconds
+                "task": "EC",                                         # list of task name(s)
             },
+            dbconnectionstring:str='',
             is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
-            random_seed=None):                                               # numpy random seed
+            random_seed=9):                                               # numpy random seed
         np.random.seed(random_seed)
-        self.signalstore = SignalstoreHBN(dataset_name)
+        self.signalstore = SignalstoreHBN(dataset_name, dbconnectionstring=dbconnectionstring)
         self.metadata_info= metadata
-        self.subjects = subjects
+        self.nsubjects = n_subjects
         self.task_params = task_params
+        self.subjects = subjects if subjects else self.__get_subjects(is_test) 
+
+        self.seed = random_seed
+        np.random.seed(random_seed)
+        torch.manual_seed(random_seed)
 
         self.data = None
         self.start_time = time.time()
@@ -277,29 +287,56 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
         sample = self.data.isel(sample=idx)
         return sample.to_numpy(), sample.attrs
     
+    def __get_subjects(self, is_test):
+        basedir = "/mnt/nemar/child-mind-rest"
+        
+        test_prob = 0.3
+        all_subjects = np.array([i.split('_')[0] for i in os.listdir(basedir) if i.split('.')[-1] == 'set'])
+        test_subjects_file = impresources.files('libs').joinpath('data').joinpath('test_subjects.csv')
+        if test_subjects_file.exists():
+            with test_subjects_file.open() as f:
+                reader = csv.reader(f)
+                test_subjects = next(reader)
+        else:
+            test_subjects = all_subjects[:int(len(all_subjects)*test_prob)]
+            with test_subjects_file.open('w') as out:
+                writer = csv.writer(out)
+                writer.writerow(test_subjects)
+        if is_test:
+            subjects = test_subjects
+        else:
+            subjects = list(set(all_subjects)-set(test_subjects))
+        
+        random_idx = np.arange(len(subjects))
+        np.random.shuffle(random_idx)
+        subjects = list(np.array(subjects)[random_idx])
+
+        return subjects
+
+
     def __get_data(self):
-        print('Retrieving data...')
-        ds = None
+        print('Getting subject data for task %s...' % (self.task_params['task']))
+        ds = []
+        subj_count = 0
 
-        with self.signalstore.uow as uow:
-            for subj in self.subjects:
-                recordings = self.signalstore.query_data({'subject': subj})
-                print('Took %s second(s)' % (time.time() - self.start_time))
+        for subj in self.subjects:
+            if self.nsubjects > 0 and subj_count == self.nsubjects:
+                break
+            print('Subject:', subj)
+            print('Querying...')
+            query = {'subject': subj, 'task': self.task_params['task']} if self.task_params['task'] else {'subject': subj}
+            recordings = self.signalstore.query_data(query)
+            print('Took %s second(s)' % (time.time() - self.start_time))
+            self.start_time = time.time()
 
-                print('Constructing dataset...')
-                for r in recordings:
-                    record = uow.data.get(r['schema_ref'], r['data_name'])
-                    if ds is None:
-                        ds = record.to_dataset()
-                        ds.attrs['sampling_frequency'] = record.attrs['sampling_frequency']
-                    for record in recordings:
-                        try:
-                            ds[f"{record['schema_ref']}__{record['data_name']}"] = uow.data.get(record['schema_ref'], record['data_name'])
-                        except:
-                            continue
-                print('Took %s second(s)' % (time.time() - self.start_time))
-            
-        self.data = ds
+            print('Retrieving raw data...')
+            for r in recordings:
+                record = self.signalstore.query_data({'schema_ref': r['schema_ref'], 'data_name': r['data_name']}, get_data=True, validate=False)[0]
+                ds.append(record)
+            print('Took %s second(s)' % (time.time() - self.start_time))
+            subj_count += 1
+        
+        self.data = xr.merge(ds)
 
 
     def __process_data(self):
@@ -310,11 +347,12 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
         # segment data into EEG windows
         ds_coarsen = ds.coarsen(time=ds.attrs['sampling_frequency']*window, boundary='trim').construct(time=('window', 'time'), keep_attrs=True)
         ds2 = ds_coarsen.to_dataarray()
+        # ds2 = ds_coarsen.to_stacked_array(sample=("variable", "window"))
         ds3 = ds2.stack(sample=("variable", "window"))
         self.data = ds3
+        # self.data = ds2
         print('Took %s second(s)' % (time.time() - self.start_time))
         self.start_time = time.time()
-
 
     def get_metadata(self, key):
         '''
