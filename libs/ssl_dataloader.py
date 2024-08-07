@@ -268,6 +268,10 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
         self.data = None
         self.start_time = time.time()
 
+        '''
+        TODO can we do all this lazily? As in all these operations are done on the metadata level and actual data will be retrieved only when pytorch request batch data.
+             can the indexing be computed by time dimension metadata without loading the data?
+        '''
         self.__get_data()
         self.start_time = time.time()
         self.__process_data()
@@ -288,6 +292,9 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
         return sample.to_numpy(), sample.attrs
     
     def __get_subjects(self, is_test):
+        '''
+        Get list of subjects to be used in the dataset, depending on whether it's test or traing data
+        '''
         basedir = "/mnt/nemar/child-mind-rest"
         
         test_prob = 0.3
@@ -315,6 +322,8 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
 
 
     def __get_data(self):
+        '''
+        '''
         print('Getting subject data for task %s...' % (self.task_params['task']))
         ds = []
         subj_count = 0
@@ -347,10 +356,14 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
         # segment data into EEG windows
         ds_coarsen = ds.coarsen(time=ds.attrs['sampling_frequency']*window, boundary='trim').construct(time=('window', 'time'), keep_attrs=True)
         ds2 = ds_coarsen.to_dataarray()
-        # ds2 = ds_coarsen.to_stacked_array(sample=("variable", "window"))
         ds3 = ds2.stack(sample=("variable", "window"))
         self.data = ds3
-        # self.data = ds2
+
+        # shuffle data
+        print('\tShuffling...')
+        random_idx = np.arange(ds3.sample.shape[0])
+        np.random.shuffle(random_idx)
+        ds3 = ds3.isel(sample=random_idx)
         print('Took %s second(s)' % (time.time() - self.start_time))
         self.start_time = time.time()
 
