@@ -1,0 +1,5 @@
+type,sample,value,offset,duration,timestamp,orig
+9999,1,,,1,,
+83  ,615,,,1,,
+103 ,85888,,,1,,
+break cnt,86175,epoch,,131790,,

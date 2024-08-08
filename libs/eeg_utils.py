@@ -12,8 +12,9 @@ import os
 #     def __setitem__(self, key, value):
 #         self.__dict__[key] = value
 
-def plot_raw_eeg(data):
-    sampling_freq = 128  # in Hertz
+def plot_raw_eeg(data, sampling_freq):
+    print(data.shape)
+    print(sampling_freq)
     info = mne.create_info(data.shape[0], sfreq=sampling_freq)
     simulated_raw = mne.io.RawArray(data, info)
     simulated_raw.plot(show_scrollbars=False, show_scalebars=False)

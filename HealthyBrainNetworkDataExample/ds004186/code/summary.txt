@@ -1,0 +1,13 @@
+The table below indicates the total number of EEG files in each release (totalEEG), the total number of phenotype files for the same release (totalPheno) which may be higher because not all participants had their EEG recorded. The processedEEG column contains the number of files that could be processed. The unprocessedEEG column contains the number of participants that were missing eyes-open or eyes-closed EEG. The corrupted EEG column contains the number of EEG files that were corrupted (all of them missing event markers and/or truncated).
+
+release	totalEEG	totalPheno	processedEEG	unprocessedEEG	corruptedEEG
+1.1	603	797	557	46	14
+2.1	156	256	154	2	3
+3	188	317	184	4	1
+4	359	562	322	37	1
+5	272	391	221	51	1
+6	213	336	202	11	3
+7	476	702	390	86	9
+8	361	471	226	135	6
+9	364	422	270	94	5
+10	576	852	480	96	11
