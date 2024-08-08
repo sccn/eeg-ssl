@@ -321,6 +321,7 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
         return subjects
 
 
+    # def __get_batch(self):
     def __get_data(self):
         '''
         '''
@@ -333,7 +334,7 @@ class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
                 break
             print('Subject:', subj)
             print('Querying...')
-            query = {'subject': subj, 'task': self.task_params['task']} if self.task_params['task'] else {'subject': subj}
+            query = {'subject': subj, 'task': {'$in': self.task_params['task']}} #if self.task_params['task'] else {'subject': subj}
             recordings = self.signalstore.query_data(query)
             print('Took %s second(s)' % (time.time() - self.start_time))
             self.start_time = time.time()

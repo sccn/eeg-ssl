@@ -50,7 +50,8 @@ def run_experiment(args):
             train_params={
                 'num_epochs': args.epochs,
                 'batch_size': args.batch_size,
-                'print_every': args.print_every
+                'print_every': args.print_every,
+                'learning_rate': args.lr
             },
             random_seed=args.seed,
             debug=args.debug
@@ -71,6 +72,7 @@ def main():
     parser.add_argument('--mask_prob', type=float, default=0.3, help="Masking probability (default: 0.3)")
     parser.add_argument('--epochs', type=int, default=10, help="Number of training epochs (default: 10)")
     parser.add_argument('--batch_size', type=int, default=128, help="Batch size (default: 128)")
+    parser.add_argument('--lr', type=float, default=0.001, help="Adam learning rate")
     parser.add_argument('--print_every', type=int, default=100, help="Display model performance every # training step (default: 100)")
     parser.add_argument('--debug', type=bool, default=True, help="Whether running in debug mode without wandb tracking")
 

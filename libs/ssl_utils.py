@@ -19,7 +19,8 @@ class MaskedContrastiveLearningTask():
                 train_params={
                     'num_epochs': 100,
                     'batch_size': 10,
-                    'print_every': 10
+                    'print_every': 10,
+                    'learning_rate': 0.001,
                 },
                 random_seed=9,
                 debug=True,
@@ -121,11 +122,13 @@ class MaskedContrastiveLearningTask():
     def train(self, model, train_params={}):
         print('Training on ', self.device)
         self.train_params.update(train_params)
+        print("With parameters:", self.train_params)
         num_epochs = self.train_params['num_epochs']
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
+        learning_rate = self.train_params['learning_rate']
 
-        optimizer  = torch.optim.Adam(model.parameters())
+        optimizer  = torch.optim.Adam(model.parameters(), lr=learning_rate)
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
