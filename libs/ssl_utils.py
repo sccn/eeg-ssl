@@ -170,6 +170,17 @@ class MaskedContrastiveLearningTask():
         print('Eval test score:', test_score)
         return train_score, test_score
 
+import torch
+from torch.nn import functional as F
+import torch.nn as nn
+import numpy as np
+from torch.utils.data import Dataset, DataLoader, random_split
+from tqdm import tqdm
+from joblib import Parallel, delayed
+import os
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+import itertools
+
 class RelativePositioningTask():
     def __init__(self,
                 dataset: torch.utils.data.Dataset,
@@ -198,7 +209,7 @@ class RelativePositioningTask():
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
-        self.linear_ff = nn.Linear(768*11, 200)
+        self.linear_ff = None
         self.loss_linear = nn.Linear(200, 1)
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
@@ -209,10 +220,10 @@ class RelativePositioningTask():
 
         for i in range(len(embeddings)):
           differences.append(torch.abs(embeddings[i][0] - embeddings[i][1]))
-        
+
         return torch.stack(differences)
-    
-    def forward(self, model, x):
+
+    def forward(self, model, x, opt):
         samples = []
         labels = []
 
@@ -257,9 +268,12 @@ class RelativePositioningTask():
         labels = torch.stack(labels)
 
         embeddings = []
+        if self.linear_ff is None:
+            self.linear_ff = nn.Linear(torch.flatten(model.feature_encoder(samples[0][:, 0]), start_dim = 1).shape[1], 200)
+            opt.add_param_group({'params': list(self.linear_ff.parameters())})
 
         for i in range(samples.shape[0]):
-          embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(samples[i][:, 0]), start_dim = 1)))
+            embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(samples[i][:, 0]), start_dim = 1)))
 
         differences = self.gRP(embeddings)
         labels = labels.long()
@@ -279,14 +293,14 @@ class RelativePositioningTask():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-        optimizer  = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()) + list(self.linear_ff.parameters()))
+        optimizer = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()))
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
             for t, (samples, _) in enumerate(dataloader_train):
                 samples = samples.to(device=self.device, dtype=torch.float32)
-                differences, labels = self.forward(model, samples)
+                differences, labels = self.forward(model, samples, optimizer)
                 loss = self.loss(differences, labels)
                 optimizer.zero_grad()
                 loss.backward()
@@ -361,7 +375,7 @@ class TemporalShufflingTask():
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
-        self.linear_ff = nn.Linear(768*11, 200)
+        self.linear_ff = None
         self.loss_linear = nn.Linear(400, 1)
 
     def train_test_split(self):
@@ -375,8 +389,8 @@ class TemporalShufflingTask():
           differences.append(torch.cat((torch.abs(embeddings[i][0] - embeddings[i][1]), torch.abs(embeddings[i][1] - embeddings[i][2])), dim = 0))
 
         return torch.stack(differences)
-    
-    def forward(self, model, x):
+
+    def forward(self, model, x, opt):
         samples = []
         labels = []
 
@@ -402,6 +416,10 @@ class TemporalShufflingTask():
 
         embeddings = []
 
+        if self.linear_ff is None:
+            self.linear_ff = nn.Linear(torch.flatten(model.feature_encoder(samples[0][:, 0]), start_dim = 1).shape[1], 200)
+            opt.add_param_group({'params': list(self.linear_ff.parameters())})
+
         for i in range(samples.shape[0]):
           embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(samples[i][:, 0]), start_dim = 1)))
 
@@ -423,14 +441,14 @@ class TemporalShufflingTask():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-        optimizer  = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()) + list(self.linear_ff.parameters()))
+        optimizer  = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()))
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
             for t, (samples, _) in enumerate(dataloader_train):
                 samples = samples.to(device=self.device, dtype=torch.float32)
-                differences, labels = self.forward(model, samples)
+                differences, labels = self.forward(model, samples, optimizer)
                 loss = self.loss(differences, labels)
                 optimizer.zero_grad()
                 loss.backward()
@@ -467,6 +485,13 @@ class TemporalShufflingTask():
         train_score = clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
         print('Eval train score:', train_score)
 
+        samples_test, labels_test = next(iter(val_test_dataloader))
+        samples_test = samples_test.to(device=self.device, dtype=torch.float32)
+        predictions = model(samples_test)
+        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
+        test_score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
+        print('Eval test score:', test_score)
+        return train_score, test_score
         samples_test, labels_test = next(iter(val_test_dataloader))
         samples_test = samples_test.to(device=self.device, dtype=torch.float32)
         predictions = model(samples_test)
