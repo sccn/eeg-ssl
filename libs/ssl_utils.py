@@ -269,11 +269,11 @@ class RelativePositioningTask():
 
         embeddings = []
         if self.linear_ff is None:
-            self.linear_ff = nn.Linear(torch.flatten(model.feature_encoder(samples[0][:, 0]), start_dim = 1).shape[1], 200)
+            self.linear_ff = nn.Linear(torch.flatten(model(samples[0][:, 0]), start_dim = 1).shape[1], 200)
             opt.add_param_group({'params': list(self.linear_ff.parameters())})
 
         for i in range(samples.shape[0]):
-            embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(samples[i][:, 0]), start_dim = 1)))
+            embeddings.append(self.linear_ff(torch.flatten(model(samples[i][:, 0]), start_dim = 1)))
 
         differences = self.gRP(embeddings)
         labels = labels.long()
@@ -417,11 +417,11 @@ class TemporalShufflingTask():
         embeddings = []
 
         if self.linear_ff is None:
-            self.linear_ff = nn.Linear(torch.flatten(model.feature_encoder(samples[0][:, 0]), start_dim = 1).shape[1], 200)
+            self.linear_ff = nn.Linear(torch.flatten(model(samples[0][:, 0]), start_dim = 1).shape[1], 200)
             opt.add_param_group({'params': list(self.linear_ff.parameters())})
 
         for i in range(samples.shape[0]):
-          embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(samples[i][:, 0]), start_dim = 1)))
+          embeddings.append(self.linear_ff(torch.flatten(model(samples[i][:, 0]), start_dim = 1)))
 
         differences = self.gTS(embeddings)
         labels = labels.long()
