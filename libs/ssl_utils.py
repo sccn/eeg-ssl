@@ -523,6 +523,18 @@ class CPC():
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
+        self.gru = nn.GRU(200, 100)
+        self.linear_gAR = nn.Linear(100*self.Nc, 100)
+        self.linear_fk = nn.Linear(100, 200)
+
+    def gAR(self, x):
+        x = self.gru(x)[0]
+        x = torch.flatten(x)
+        return self.linear_gAR(x)
+
+    def fk(self, h, c):
+        x = self.linear_fk(c)
+        return torch.matmul(h, x)
 
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
@@ -546,7 +558,7 @@ class CPC():
                 opt.add_param_group({'params': list(self.linear_ff.parameters())})
 
             embeddings = self.linear_ff(torch.flatten(model.feature_encoder(c_w[:, 0]), start_dim = 1))
-            ct.append(torch.mean(embeddings, dim = 0))
+            ct.append(self.gAR(embeddings))
 
             future_windows = []
             for st in np.arange(ti+(self.win*self.Nc), ti+(self.win*(self.Nc+self.Np)), self.win):
@@ -566,7 +578,7 @@ class CPC():
         future_embeddings = []
         for i in range(future_windows_all.shape[0]):
             future_embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(future_windows_all[i, :, 0]), start_dim = 1)))
-        
+
         negative_windows_all = torch.stack(negative_windows_all)
         negative_embeddings = []
         for i in range(negative_windows_all.shape[0]):
@@ -574,8 +586,8 @@ class CPC():
             for j in range(negative_windows_all.shape[1]):
                 negative_embeddings[i].append(self.linear_ff(torch.flatten(model.feature_encoder(negative_windows_all[i, j, :, 0]), start_dim = 1)))
             negative_embeddings[i] = torch.stack(negative_embeddings[i])
-        
-        return torch.stack(ct), torch.stack(future_embeddings), torch.stack(negative_embeddings)   
+
+        return torch.stack(ct), torch.stack(future_embeddings), torch.stack(negative_embeddings)
 
     def loss(self, ct, future_embeddings, negative_embeddings):
         loss = 0
@@ -583,10 +595,10 @@ class CPC():
             for j in range(future_embeddings.shape[1]):
                 dot_negative = 0
                 for k in range(negative_embeddings.shape[2]):
-                    dot_negative += torch.dot(ct[i], negative_embeddings[i, j, k])
-                den = dot_negative + torch.dot(ct[i], future_embeddings[i, j])
-                num = torch.dot(ct[i], future_embeddings[i, j])
-                loss += num/den
+                    dot_negative += torch.exp(self.fk(negative_embeddings[i, j, k], ct[i]))
+                den = dot_negative + torch.exp(self.fk(future_embeddings[i, j], ct[i]))
+                num = torch.exp(self.fk(future_embeddings[i, j], ct[i]))
+                loss -= torch.log(num/den)
         return loss
 
     def train(self, model, train_params={}):
@@ -596,7 +608,7 @@ class CPC():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-        optimizer  = torch.optim.Adam(model.parameters())
+        optimizer  = torch.optim.Adam(list(model.parameters()) + list(self.gru.parameters()) + list(self.linear_gAR.parameters()) + list(self.linear_fk.parameters()))
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
