@@ -32,8 +32,10 @@ class SSLModel(ABC, nn.Module):
 class Wav2VecBrainModel(nn.Module):
     def __init__(self):
         super().__init__()
+        self.encoder_embed_dim = 768
         self.feature_encoder = self.FeatureEncoder()
         self.context_encoder = self.TransformerLayer()
+        self.mask_emb = nn.Parameter(torch.FloatTensor(self.encoder_embed_dim).uniform_())
 
     def forward(self, x):
         x = self.feature_encoder(x)
