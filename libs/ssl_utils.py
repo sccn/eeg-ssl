@@ -24,21 +24,21 @@ class MaskedContrastiveLearningTask():
                 },
                 random_seed=9,
                 debug=True,
-                verbose=False
+                verbose=False,
         ):
         torch.manual_seed(random_seed)
         self.dataset = dataset
-        self.train_test_split()
-
+        self.seed = random_seed
         self.masked_vector_learned_embedding = None
         self.train_params = train_params
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.debug  = debug
         self.verbose=verbose
+        self.train_test_split()
 
     def train_test_split(self):
-        generator = torch.Generator().manual_seed(42)
+        generator = torch.Generator().manual_seed(self.seed)
         self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
 
     def forward(self, model, x):
@@ -57,27 +57,21 @@ class MaskedContrastiveLearningTask():
         if self.verbose:
             print('feature encoder output shape', embeddings.shape)
 
-        # initialize learned masked vector embedding based on dimension D
-        if self.masked_vector_learned_embedding is None:
-            self.masked_vector_learned_embedding = torch.randn((1, embeddings.shape[1]), requires_grad=True) # N x D # TODO
-            if self.verbose:
-                print('learned masked embeddings shape', self.masked_vector_learned_embedding.shape)
-
-        # print('masked vector embeddiing', self.masked_vector_learned_embedding.sum())
+        if self.verbose:
+            print('mask embedding value', model.mask_emb)
 
         # select from the sampled segment L masked inputs
         masked_indices = np.random.choice(embeddings.shape[-1], size=(int(self.mask_probability*embeddings.shape[-1]),), replace=False)
         if self.verbose:
             print('masked indices shape', masked_indices.shape)
+
         # replace the selected indices with the masked vector embedding
         true_masked_embeddings = embeddings[:,:,masked_indices].detach().clone() # N x D x K 
         if self.verbose:
             print('true masked embeddings shape', true_masked_embeddings.shape)
 
         for i in range(len(masked_indices)):
-            embeddings[:,:,i] = self.masked_vector_learned_embedding.repeat(embeddings.shape[0], 1)
-        if self.verbose:
-            print('masked embeddings shape', embeddings.shape)
+            embeddings[:,:,i] = model.mask_emb
 
         # feed masked samples to context encoder. Every timestep has an output
         context_encoder_outputs = model.context_encoder(embeddings) # N x D x K

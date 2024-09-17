@@ -42,6 +42,7 @@ def run_experiment(args):
     print('Y', dataset[0][1])
 
     model = Wav2VecBrainModel()
+    print('verbose', args.verbose)
     task = MaskedContrastiveLearningTask(dataset, 
             task_params={
                 'mask_prob': args.mask_prob
@@ -53,7 +54,8 @@ def run_experiment(args):
                 'learning_rate': args.lr
             },
             random_seed=args.seed,
-            debug=args.debug
+            debug=args.debug,
+            verbose=args.verbose
     )
     trained_model = task.train(model)
 
@@ -73,10 +75,11 @@ def main():
     parser.add_argument('--batch_size', type=int, default=128, help="Batch size (default: 128)")
     parser.add_argument('--lr', type=float, default=0.001, help="Adam learning rate")
     parser.add_argument('--print_every', type=int, default=100, help="Display model performance every # training step (default: 100)")
-    parser.add_argument('--debug', type=bool, default=True, help="Whether running in debug mode without wandb tracking")
+    parser.add_argument('--debug', action='store_true', help="Whether running in debug mode without wandb tracking")
 
     # Parse the arguments
     args = parser.parse_args()
+    print('Arguments:', args)
 
     run_experiment(args)
 
