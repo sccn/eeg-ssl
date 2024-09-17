@@ -149,6 +149,7 @@ class MaskedContrastiveLearningTask():
                 del loss
 
             eval_train_score, eval_test_score = self.finetune_eval_score(model)
+
             if t % print_every == 0:
                 # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
                 print('Epoch %d, Iteration %d, val/train = %.4f, val/test = %.4f' % (e, t, eval_train_score, eval_test_score))
