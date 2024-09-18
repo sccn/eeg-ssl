@@ -3,17 +3,12 @@ import os
 import numpy as np
 import mne
 import torch
-from tqdm import tqdm
-import hashlib
-from pathlib import Path
 import csv
-# from abc import ABC, abstractmethod
-import pickle
-from joblib import Parallel, delayed
 import pandas as pd
 from libs.signalstore_data_utils import SignalstoreHBN
 import xarray as xr
 import time
+import math
 try:
     from importlib import resources as impresources
 except ImportError:
@@ -22,7 +17,7 @@ except ImportError:
 
 verbose = False
     
-class MaskedContrastiveLearningDataset(torch.utils.data.IterableDataset):
+class HBNRestDataset(torch.utils.data.IterableDataset):
     def __init__(self,
             data_dir='/mnt/nemar/child-mind-rest', # location of asr cleaned data 
             metadata={
@@ -35,14 +30,18 @@ class MaskedContrastiveLearningDataset(torch.utils.data.IterableDataset):
             x_params={
                 "window": 2,                                          # EEG window length in seconds
                 "sfreq": 128,                                         # sampling rate
+                "subject_per_batch": 10,                              # number of subjects per batch
             },
             is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
             random_seed=None):                                               # numpy random seed
+        super(HBNRestDataset).__init__()
         np.random.seed(random_seed)
         self.basedir = data_dir
         self.files = np.array([i for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
         self.subjects = np.array([i.split('_')[0] for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
         self.M = x_params['sfreq'] * x_params['window']
+        self.subject_per_batch = x_params['subject_per_batch']
+
         if subjects != None:
             subjects = [i for i in subjects if i in self.subjects]
             selected_indices = [subjects.index(i) for i in subjects if i in self.subjects]
@@ -75,13 +74,32 @@ class MaskedContrastiveLearningDataset(torch.utils.data.IterableDataset):
         #         self.subjects = self.subjects[self.n_cv[0]*split_size:(self.n_cv[0]+1)*split_size]
 
     def __iter__(self):
-        for i in range(len(self.files)):
-            raw_file = self.files[i]
-            data = self.preload_raw(raw_file) 
-            y = self.metadata[i]
-            indices = np.arange(0, data.shape[-1]-self.M, self.M)
+        # set up multi-processing
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:  # single-process data loading, return the full iterator
+            iter_start = 0
+            iter_end = len(self.files)
+        else:  # in a worker process
+            # split workload
+            per_worker = int(math.ceil(len(self.files) / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, len(self.files))
+
+        for i in range(iter_start, iter_end, self.subjects_per_batch):
+            # load data
+            subject_data = [self.preload_raw(self.files[i+s]) for s in range(self.subjects_per_batch)]
+            max_length   = max([data.shape[-1] for data in subject_data])
+
+            # sample windows, rotating through the subjects
+            # to ensure equal contribution among subject per batch
+            indices  = np.arange(0, max_length-self.M, self.M)
             for idx in indices:
-                yield data[:,idx:idx+self.M], y
+                for s in range(self.subjects_per_batch):
+                    data = subject_data[s]
+                    if idx < data.shape[-1]-self.M:
+                        yield data[:,idx:idx+self.M] #, self.subjects[i+s]
+
 
     '''
     Extract metadata of samples
@@ -99,7 +117,7 @@ class MaskedContrastiveLearningDataset(torch.utils.data.IterableDataset):
             return metadata
 
     def preload_raw(self, raw_file):
-        EEG = mne.io.read_raw_eeglab(os.path.join(raw_file), preload=True)
+        EEG = mne.io.read_raw_eeglab(os.path.join(self.basedir, raw_file), preload=True, verbose='error')
         mat_data = EEG.get_data()
 
         if len(mat_data.shape) > 2:
@@ -107,7 +125,7 @@ class MaskedContrastiveLearningDataset(torch.utils.data.IterableDataset):
         return mat_data
 
 
-class MaskedContrastiveLearningSignalstoreDataset(torch.utils.data.Dataset):
+class HBNSignalstoreDataset(torch.utils.data.Dataset):
     def __init__(self,
             metadata={
                 'filepath': '/home/dung/subjects.csv', # path to subject metadata csv file
