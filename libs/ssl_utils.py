@@ -41,6 +41,16 @@ class MaskedContrastiveLearningTask():
         generator = torch.Generator().manual_seed(self.seed)
         self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
 
+    def shuffle_batch(self, x, batch_dim=0):
+        '''
+        Shuffle sample in a batch to increase randomization
+        '''
+        shuffling_indices = list(range(x.shape[batch_dim]))
+        np.random.shuffle(shuffling_indices)
+        shuffling_indices = torch.tensor(shuffling_indices)
+        x = torch.index_select(x, batch_dim, shuffling_indices)
+        return x
+
     def forward(self, model, x):
         '''
         Forward pass of the model
@@ -127,7 +137,8 @@ class MaskedContrastiveLearningTask():
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
-            for t, (samples, _) in enumerate(dataloader_train):
+            for t, samples in enumerate(dataloader_train):
+                samples = self.shuffle_batch(samples, batch_dim=0)
                 samples = samples.to(device=self.device, dtype=torch.float32)
                 predictions, masked_latents = self.forward(model, samples)
                 loss = self.loss(predictions, masked_latents)
