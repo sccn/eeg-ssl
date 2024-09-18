@@ -40,7 +40,6 @@ def run_experiment(args):
     print('Length of dataset', len(dataset))
     print('X dim', dataset[0][0].shape)
     print('Y', dataset[0][1])
-    # eeg_utils.plot_raw_eeg(dataset[5][0]) # ERROR
 
     model = Wav2VecBrainModel()
     print('verbose', args.verbose)
