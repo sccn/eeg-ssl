@@ -19,21 +19,37 @@ class MaskedContrastiveLearningTask():
                 train_params={
                     'num_epochs': 100,
                     'batch_size': 10,
-                    'print_every': 10
+                    'print_every': 10,
+                    'learning_rate': 0.001,
                 },
-                verbose=False
+                random_seed=9,
+                debug=True,
+                verbose=False,
         ):
+        torch.manual_seed(random_seed)
         self.dataset = dataset
-        self.train_test_split()
-
+        self.seed = random_seed
+        self.masked_vector_learned_embedding = None
         self.train_params = train_params
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.debug  = debug
         self.verbose=verbose
+        self.train_test_split()
 
     def train_test_split(self):
-        generator = torch.Generator().manual_seed(42)
+        generator = torch.Generator().manual_seed(self.seed)
         self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
+
+    def shuffle_batch(self, x, batch_dim=0):
+        '''
+        Shuffle sample in a batch to increase randomization
+        '''
+        shuffling_indices = list(range(x.shape[batch_dim]))
+        np.random.shuffle(shuffling_indices)
+        shuffling_indices = torch.tensor(shuffling_indices)
+        x = torch.index_select(x, batch_dim, shuffling_indices)
+        return x
 
     def forward(self, model, x):
         '''
@@ -51,28 +67,24 @@ class MaskedContrastiveLearningTask():
         if self.verbose:
             print('feature encoder output shape', embeddings.shape)
 
-        # learned masked vector embedding
-        masked_vector_learned_embedding = torch.ones((embeddings.shape[0], embeddings.shape[1])) # N x D # TODO
         if self.verbose:
-            print('learned masked embeddings shape', masked_vector_learned_embedding.shape)
+            print('mask embedding value', model.mask_emb)
 
         # select from the sampled segment L masked inputs
         masked_indices = np.random.choice(embeddings.shape[-1], size=(int(self.mask_probability*embeddings.shape[-1]),), replace=False)
         if self.verbose:
             print('masked indices shape', masked_indices.shape)
+
         # replace the selected indices with the masked vector embedding
-        true_masked_embeddings = embeddings[:,:,masked_indices] # N x D x K # .detach().clone()
+        true_masked_embeddings = embeddings[:,:,masked_indices].detach().clone() # N x D x K 
         if self.verbose:
             print('true masked embeddings shape', true_masked_embeddings.shape)
 
-        learned_embeddings_replace = embeddings.clone() # if not clone backward pass will complain as inplace modification not allowed
         for i in range(len(masked_indices)):
-            learned_embeddings_replace[:,:,i] = masked_vector_learned_embedding
-        if self.verbose:
-            print('masked embeddings shape', embeddings.shape)
+            embeddings[:,:,i] = model.mask_emb
 
         # feed masked samples to context encoder. Every timestep has an output
-        context_encoder_outputs = model.context_encoder(learned_embeddings_replace) # N x D x K
+        context_encoder_outputs = model.context_encoder(embeddings) # N x D x K
         if self.verbose:
             print('context encoder outputs shape', context_encoder_outputs.shape)
 
@@ -114,16 +126,19 @@ class MaskedContrastiveLearningTask():
     def train(self, model, train_params={}):
         print('Training on ', self.device)
         self.train_params.update(train_params)
+        print("With parameters:", self.train_params)
         num_epochs = self.train_params['num_epochs']
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
+        learning_rate = self.train_params['learning_rate']
 
-        optimizer  = torch.optim.Adam(model.parameters())
+        optimizer  = torch.optim.Adam(model.parameters(), lr=learning_rate)
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
-            for t, (samples, _) in enumerate(dataloader_train):
+            for t, samples in enumerate(dataloader_train):
+                samples = self.shuffle_batch(samples, batch_dim=0)
                 samples = samples.to(device=self.device, dtype=torch.float32)
                 predictions, masked_latents = self.forward(model, samples)
                 loss = self.loss(predictions, masked_latents)
@@ -135,7 +150,9 @@ class MaskedContrastiveLearningTask():
                     # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
                     print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
 
-                metrics = {"train/train_loss": loss.item()}
+                if wandb.run is not None:
+                    metrics = {"train/train_loss": loss.item()}
+                    wandb.log(metrics)
 
                 del samples
                 del predictions
@@ -143,6 +160,16 @@ class MaskedContrastiveLearningTask():
                 del loss
 
             eval_train_score, eval_test_score = self.finetune_eval_score(model)
+
+            if t % print_every == 0:
+                # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
+                print('Epoch %d, Iteration %d, val/train = %.4f, val/test = %.4f' % (e, t, eval_train_score, eval_test_score))
+
+            if wandb.run is not None:
+                wandb.log({"val/train_score": eval_train_score,
+                           "val/test_score": eval_test_score})
+        if wandb.run is not None:
+            wandb.finish()
 
     def finetune_eval_score(self, model):
         model.eval()
@@ -200,6 +227,7 @@ class RelativePositioningTask():
         self.verbose=verbose
         self.linear_ff = None
         self.loss_linear = nn.Linear(200, 1)
+
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
         self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)

@@ -12,3 +12,12 @@ https://www.researchgate.net/publication/346857471_Uncovering_the_structure_of_c
 
 Hubert Banville, Isabela Albuquerque, Aapo Hyvärinen, Graeme Moffat, Denis-Alexander Engemann, et al.. Self-supervised representation learning from electroencephalography signals. MLSP 2019 - IEEE 29th International Workshop on Machine Learning for Signal Processing, Oct 2019, Pittsburgh, United States. ⟨hal-02361350⟩
 https://hal.science/hal-02361350
+
+## Run experiment using Docker
+On a machine with Nvidia GPU:
+
+```
+docker run -it --runtime=nvidia --gpus all -v /mnt/nemar/child-mind-rest:/mnt/nemar/child-mind-rest -v .:/app dtyoung/eeg-ssl python main.py --nsubjects=30
+```
+
+Here the path to the dataset is at `/mnt/nemar/child-mind-rest` and we assume that the command is run in the top-level directory of the cloned version of this repo.

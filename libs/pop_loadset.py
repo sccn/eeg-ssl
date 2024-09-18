@@ -1,6 +1,5 @@
-import mne
-import numpy as np
 import scipy.io
+import numpy as np
 import os
 
 # Allows access using . notation
@@ -11,13 +10,6 @@ import os
 #         return self.__dict__[key]
 #     def __setitem__(self, key, value):
 #         self.__dict__[key] = value
-
-def plot_raw_eeg(data, sampling_freq):
-    print(data.shape)
-    print(sampling_freq)
-    info = mne.create_info(data.shape[0], sfreq=sampling_freq)
-    simulated_raw = mne.io.RawArray(data, info)
-    simulated_raw.plot(show_scrollbars=False, show_scalebars=False)
 
 def pop_loadset(file_path):
     # Load MATLAB file
