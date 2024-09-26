@@ -6,8 +6,10 @@ import torch
 import csv
 import pandas as pd
 from libs.signalstore_data_utils import SignalstoreHBN
+from os import scandir
 import xarray as xr
 import time
+from pathlib import Path
 import math
 try:
     from importlib import resources as impresources
@@ -17,6 +19,71 @@ except ImportError:
 
 verbose = False
     
+class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
+    def __init__(self,
+            data_dir='/mnt/nemar/openneuro/ds004186', # location of asr cleaned data 
+            metadata={
+                'file': (impresources.files('libs') / 'subjects.csv'),  # path to subject metadata csv file
+                'index_column': 'participant_id',      # index column of the file corresponding to subject name
+                'key': 'gender',                       # which metadata we want to use for finetuning
+            },                 
+            x_params={
+                "window": 2,                                          # EEG window length in seconds
+                "sfreq": 128,                                         # sampling rate
+                "subject_per_batch": 10,                              # number of subjects per batch
+            },
+            random_seed=None):                                               # numpy random seed
+        super(HBNRestBIDSDataset).__init__()
+        np.random.seed(random_seed)
+        self.bidsdir = Path(data_dir)
+        self.files = []
+        self.M = x_params['sfreq'] * x_params['window']
+
+        # shuffle data
+        shuffling_indices = list(range(len(self.files)))
+        np.random.shuffle(shuffling_indices)
+        # self.metadata_info = metadata
+        # self.metadata = self.get_metadata()
+        # self.files = self.files[shuffling_indices]
+
+    def __iter__(self):
+        if not type(self.bidsdir) is Path:
+            self.bidsdir = Path(self.bidsdir)
+        for entry in scandir(self.bidsdir):
+            if entry.is_dir() and entry.name.startswith('sub-'):
+                subject_dir = entry.name
+                subject = subject_dir.split('-')[1]
+                subject_dir_path = self.bidsdir / subject_dir
+                eeg_dir = subject_dir_path / "eeg"
+
+                tasks = ['EC', 'EO']
+                runs  = [list(range(1, 6)), list(range(1, 6))]
+                for t, task in enumerate(tasks):
+                    for run in runs[t]:
+                        # get file by name pattern subject_dir*task*run_eeg.set
+                        raw_file = eeg_dir / f"{subject_dir}_task-{task}_run-{run}_eeg.set"
+                        if os.path.exists(raw_file):
+                            self.files.append(raw_file)
+                            # load data
+                            data = self.preload_raw(raw_file)
+                            max_length   = data.shape[-1]
+
+                            # sample windows, rotating through the subjects
+                            # to ensure equal contribution among subject per batch
+                            indices  = np.arange(0, max_length-self.M, self.M)
+                            for idx in indices:
+                                if idx < data.shape[-1]-self.M:
+                                    yield data[:,idx:idx+self.M] #, self.subjects[i+s]
+
+    def preload_raw(self, raw_file):
+        EEG = mne.io.read_raw_eeglab(raw_file, preload=True, verbose='error')
+        mat_data = EEG.get_data()
+
+        if len(mat_data.shape) > 2:
+            raise ValueError('Expect raw data to be CxT dimension')
+        return mat_data
+
+
 class HBNRestDataset(torch.utils.data.IterableDataset):
     def __init__(self,
             data_dir='/mnt/nemar/child-mind-rest', # location of asr cleaned data 

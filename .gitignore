@@ -3,3 +3,4 @@ wandb/
 notebooks/wandb/
 __pycache__/
 signalstore/
+aws/
