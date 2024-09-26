@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 import os
 from os import scandir, walk
-from signalstore.signalstore import UnitOfWorkProvider
+from libs.signalstore import UnitOfWorkProvider
 # from mongomock import MongoClient
 from pymongo.mongo_client import MongoClient
 from fsspec.implementations.local import LocalFileSystem
@@ -14,55 +14,66 @@ import fsspec
 import mne
 import pandas as pd
 import json
+import s3fs
 # from dask.distributed import LocalCluster
 
 
 class SignalstoreHBN():
     def __init__(self, 
                  data_path='/mnt/nemar/openneuro/ds004186',                                     # path to raw data
-                 cache_path='/mnt/nemar/dtyoung/eeg-ssl-data/signalstore/hbn',                  # path where signalstore netCDF files are stored
-                 dataset_name="healthy_brain_network",                                          # TODO right now this is resting state data --> rename it to differentiate between tasks later
+                 dataset_name="healthy-brain-network",                                          # TODO right now this is resting state data --> rename it to differentiate between tasks later
                  dbconnectionstring="mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.2.15"
                  ):
-        filesystem = LocalFileSystem()
         # tmp_dir = TemporaryDirectory()
         # print(tmp_dir.name)
 
         # Create data storage location
         self.dataset_name = dataset_name
         self.data_path = Path(data_path)
-        self.cache_path = Path(cache_path) / dataset_name
 
-        # Create a directory for the dataset
-        store_path = Path(cache_path)
-        if not os.path.exists(store_path):
-            os.makedirs(store_path)
-
-        tmp_dir_fs = DirFileSystem(
-            store_path,
-            filesystem=filesystem
-        )
+        
+        
         # uri = "mongodb+srv://dtyoung112:XbiUEbzmCacjafGu@cluster0.6jtigmc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # mongodb free atlas server
         # Create a new client and connect to the server
         if not dbconnectionstring:
             dbconnectionstring = 'mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.2.15'
         client = MongoClient(dbconnectionstring)
         memory_store = {}
+        filesystem = self.set_up_filesystem(is_local=False)
         self.uow_provider = UnitOfWorkProvider(
             mongo_client=client,
-            filesystem=tmp_dir_fs,
-            memory_store=memory_store
+            filesystem=filesystem,
+            memory_store=memory_store,
+            default_filetype='zarr'
         )
 
         self.uow = self.uow_provider(self.dataset_name)
         # self.load_domain_models()
         # self.add_data()
 
+    def set_up_filesystem(self, is_local=True):
+        if is_local:
+            cache_path='/mnt/nemar/dtyoung/eeg-ssl-data/signalstore/hbn'                  # path where signalstore netCDF files are stored
+            # Create a directory for the dataset
+            store_path = Path(cache_path)
+            if not os.path.exists(store_path):
+                os.makedirs(store_path)
+
+            filesystem = LocalFileSystem()
+            tmp_dir_fs = DirFileSystem(
+                store_path,
+                filesystem=filesystem
+            )
+            return tmp_dir_fs
+        else:
+            s3 = s3fs.S3FileSystem()
+            return s3
+
     def load_domain_models(self):
         cwd = Path.cwd()
-        domain_models_path = cwd.parent / f"DomainModels/{self.dataset_name}/data_models.json"
-        metamodel_path = cwd.parent / f"DomainModels/{self.dataset_name}/metamodels.json"
-        property_path = cwd.parent / f"DomainModels/{self.dataset_name}/property_models.json"
+        domain_models_path = cwd / f"DomainModels/{self.dataset_name}/data_models.json"
+        metamodel_path = cwd / f"DomainModels/{self.dataset_name}/metamodels.json"
+        property_path = cwd / f"DomainModels/{self.dataset_name}/property_models.json"
         with open(metamodel_path) as f:
             metamodels = json.load(f)
 
@@ -152,12 +163,12 @@ class SignalstoreHBN():
                 sessions = uow.data.find(query)
                 if len(sessions) == 0:
                     print('adding data', eeg_xarray.attrs['data_name'])
-                    if self.__cache_exist(eeg_xarray.attrs['schema_ref'] + '__' + eeg_xarray.attrs['data_name']):
-                        attrs = eeg_xarray.attrs
-                        attrs['has_file'] = True
-                        uow.data.add(attrs)
-                    else:
-                        uow.data.add(eeg_xarray)
+                    # if self.__cache_exist(eeg_xarray.attrs['schema_ref'] + '__' + eeg_xarray.attrs['data_name']):
+                    #     attrs = eeg_xarray.attrs
+                    #     attrs['has_file'] = True
+                    #     uow.data.add(attrs)
+                    # else:
+                    uow.data.add(eeg_xarray)
                     uow.commit()
 
     def remove_all(self):
