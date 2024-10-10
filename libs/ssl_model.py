@@ -116,7 +116,7 @@ class SSLModel(ABC, nn.Module):
         pass
 
     @abstractmethod
-    def classify(self, x):
+    def aggregate(self, x):
         pass
 
 class Wav2VecBrainModel(nn.Module):
@@ -306,18 +306,23 @@ class VGGSSL(SSLModel):
 
     def __model_augment(self):
         self.encoder = torch.nn.Sequential(self.encoder.features, self.encoder.flatten, nn.Linear(32768, 4096))
-        if self.task == "RP":
-            self.classifier = nn.Linear(4096, 2)
-        elif self.task == "TS":
-            self.classifier = nn.Linear(4096*2, 2)
-        elif self.task == "CPC":
+        if self.task == "CPC":
             self.gAR = nn.GRU(4096, 100) # hidden size = 100, per (Banville et al, 2020) experiment
 
     def forward(self, x):
-        return self(x)
+        '''
+        @param x: (batch_size, channel, time)
+        '''
+        x = x.unsqueeze(1)
+        return self.encode(x)
     
     def encode(self, x):
         return self.encoder(x)
 
+<<<<<<< Updated upstream
     def classify(self, x):
         return self.classifier(x)
+=======
+    def aggregate(self, x):
+        return super().aggregate(x)
+>>>>>>> Stashed changes
