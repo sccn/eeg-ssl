@@ -319,10 +319,5 @@ class VGGSSL(SSLModel):
     def encode(self, x):
         return self.encoder(x)
 
-<<<<<<< Updated upstream
-    def classify(self, x):
-        return self.classifier(x)
-=======
     def aggregate(self, x):
         return super().aggregate(x)
->>>>>>> Stashed changes
