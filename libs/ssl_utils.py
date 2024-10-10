@@ -22,6 +22,8 @@ class MaskedContrastiveLearningTask():
                     'print_every': 10,
                     'learning_rate': 0.001,
                 },
+                is_cv=True,                  # whether to perform train-test-split on dataset. If False, train and val on the same dataset
+                is_iterable=False,           # whether it's an iterable dataset
                 random_seed=9,
                 debug=True,
                 verbose=False,
@@ -35,11 +37,16 @@ class MaskedContrastiveLearningTask():
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.debug  = debug
         self.verbose=verbose
+        self.is_cv = is_cv
+        self.is_iterable = is_iterable
         self.train_test_split()
 
     def train_test_split(self):
-        generator = torch.Generator().manual_seed(self.seed)
-        self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
+        if self.is_cv:
+            generator = torch.Generator().manual_seed(self.seed)
+            self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
+        else:
+            self.dataset_train = self.dataset_val = self.dataset
 
     def shuffle_batch(self, x, batch_dim=0):
         '''
@@ -133,7 +140,7 @@ class MaskedContrastiveLearningTask():
         learning_rate = self.train_params['learning_rate']
 
         optimizer  = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
+        dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = not self.is_iterable)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
@@ -215,7 +222,6 @@ class RelativePositioningTask():
                 verbose=False
         ):
         self.dataset = dataset
-        self.train_test_split()
         self.win = win_length
         self.tau_pos = tau_pos
         self.tau_neg = tau_neg
@@ -228,6 +234,7 @@ class RelativePositioningTask():
         self.linear_ff = None
         self.loss_linear = nn.Linear(200, 1)
 
+<<<<<<< Updated upstream
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
         self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
@@ -241,6 +248,9 @@ class RelativePositioningTask():
         return torch.stack(differences)
 
     def forward(self, model, x, opt):
+=======
+    def forward(self, model, x):
+>>>>>>> Stashed changes
         samples = []
         labels = []
 
@@ -310,12 +320,17 @@ class RelativePositioningTask():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
+<<<<<<< Updated upstream
         optimizer = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()))
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
+=======
+        optimizer  = torch.optim.Adam(model.parameters())
+        dataloader_train = DataLoader(self.dataset, batch_size = batch_size)
+>>>>>>> Stashed changes
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
-            for t, (samples, _) in enumerate(dataloader_train):
+            for t, samples in enumerate(dataloader_train):
                 samples = samples.to(device=self.device, dtype=torch.float32)
                 differences, labels = self.forward(model, samples, optimizer)
                 loss = self.loss(differences, labels)
@@ -334,7 +349,7 @@ class RelativePositioningTask():
                 del labels
                 del loss
 
-            eval_train_score, eval_test_score = self.finetune_eval_score(model)
+            # eval_train_score, eval_test_score = self.finetune_eval_score(model)
 
     def finetune_eval_score(self, model):
         model.eval()

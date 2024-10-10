@@ -116,14 +116,15 @@ class SSLModel(ABC, nn.Module):
         pass
 
     @abstractmethod
-    def classify(self, x):
+    def aggregate(self, x):
         pass
 
 class Wav2VecBrainModel(nn.Module):
     def __init__(self):
         super().__init__()
+        self.ninput_channel = 128
         self.encoder_embed_dim = 768
-        self.feature_encoder = self.FeatureEncoder()
+        self.feature_encoder = self.FeatureEncoder(input_chan=self.ninput_channel)
         self.context_encoder = self.TransformerLayer()
         self.mask_emb = nn.Parameter(torch.FloatTensor(self.encoder_embed_dim).uniform_())
 
@@ -135,13 +136,14 @@ class Wav2VecBrainModel(nn.Module):
 
 
     class FeatureEncoder(nn.Module):
-        def __init__(self):
+        def __init__(self, input_chan):
             super().__init__()
+            self.input_chan = 128
             self.K = [10, 3, 3, 3, 3, 2, 2]
             self.S = [2, 1, 1, 1, 1, 1, 1]
             self.conv0 = []
             self.conv0.append(nn.Sequential(
-                nn.Conv1d(128, 512, kernel_size=(10,), stride=(4,), bias=False),
+                nn.Conv1d(self.ninput_channel, 512, kernel_size=(10,), stride=(4,), bias=False),
                 nn.GELU(),
                 nn.GroupNorm(512, 512, eps=1e-05, affine=True)
             ))
@@ -186,7 +188,7 @@ class Wav2VecBrainModel(nn.Module):
         class PosEmb(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.conv = nn.Conv1d(768, 768, kernel_size=(128,), stride=(1,), padding=(64,), groups=16)
+                self.conv = nn.Conv1d(768, 768, kernel_size=(self.ninput_channel,), stride=(1,), padding=(64,), groups=16)
                 self.conv = nn.utils.weight_norm(self.conv, name="weight", dim=2)
                 self.activation = nn.GELU()
             def forward(self, x):
@@ -304,18 +306,23 @@ class VGGSSL(SSLModel):
 
     def __model_augment(self):
         self.encoder = torch.nn.Sequential(self.encoder.features, self.encoder.flatten, nn.Linear(32768, 4096))
-        if self.task == "RP":
-            self.classifier = nn.Linear(4096, 2)
-        elif self.task == "TS":
-            self.classifier = nn.Linear(4096*2, 2)
-        elif self.task == "CPC":
+        if self.task == "CPC":
             self.gAR = nn.GRU(4096, 100) # hidden size = 100, per (Banville et al, 2020) experiment
 
     def forward(self, x):
-        return self(x)
+        '''
+        @param x: (batch_size, channel, time)
+        '''
+        x = x.unsqueeze(1)
+        return self.encode(x)
     
     def encode(self, x):
         return self.encoder(x)
 
+<<<<<<< Updated upstream
     def classify(self, x):
         return self.classifier(x)
+=======
+    def aggregate(self, x):
+        return super().aggregate(x)
+>>>>>>> Stashed changes
