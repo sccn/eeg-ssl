@@ -226,7 +226,6 @@ class RelativePositioningTask():
         self.tau_pos = tau_pos
         self.tau_neg = tau_neg
         self.n_samples = n_samples
-
         self.train_params = train_params
         self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -234,7 +233,6 @@ class RelativePositioningTask():
         self.linear_ff = None
         self.loss_linear = nn.Linear(200, 1)
 
-<<<<<<< Updated upstream
     def train_test_split(self):
         generator = torch.Generator().manual_seed(42)
         self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
@@ -248,9 +246,6 @@ class RelativePositioningTask():
         return torch.stack(differences)
 
     def forward(self, model, x, opt):
-=======
-    def forward(self, model, x):
->>>>>>> Stashed changes
         samples = []
         labels = []
 
@@ -320,13 +315,8 @@ class RelativePositioningTask():
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-<<<<<<< Updated upstream
         optimizer = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()))
-        dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
-=======
-        optimizer  = torch.optim.Adam(model.parameters())
         dataloader_train = DataLoader(self.dataset, batch_size = batch_size)
->>>>>>> Stashed changes
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
