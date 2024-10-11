@@ -199,10 +199,11 @@ class MaskedContrastiveLearningTask():
 
 class RelativePositioningTask():
     def __init__(self,
-                dataset: torch.utils.data.Dataset,
-                win_length = 50,
-                tau_pos = 150,
-                tau_neg = 170,
+                train_dataset: torch.utils.data.Dataset,
+                val_dataset: torch.utils.data.Dataset,
+                win_length = 30,
+                tau_pos = 75,
+                tau_neg = 85,
                 n_samples = 1,
                 task_params={
                     'mask_prob': 0.5
@@ -214,8 +215,8 @@ class RelativePositioningTask():
                 },
                 verbose=False
         ):
-        self.dataset = dataset
-        self.train_test_split()
+        self.dataset_train = train_dataset
+        self.dataset_val = val_dataset
         self.win = win_length
         self.tau_pos = tau_pos
         self.tau_neg = tau_neg
@@ -227,10 +228,7 @@ class RelativePositioningTask():
         self.verbose=verbose
         self.linear_ff = None
         self.loss_linear = nn.Linear(200, 1)
-
-    def train_test_split(self):
-        generator = torch.Generator().manual_seed(42)
-        self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
+        self.loss_linear.to(self.device)
 
     def gRP(self, embeddings):
         differences = []
@@ -287,13 +285,15 @@ class RelativePositioningTask():
         embeddings = []
         if self.linear_ff is None:
             self.linear_ff = nn.Linear(torch.flatten(model(samples[0][:, 0]), start_dim = 1).shape[1], 200)
+            self.linear_ff.to(self.device)
             opt.add_param_group({'params': list(self.linear_ff.parameters())})
 
         for i in range(samples.shape[0]):
-            embeddings.append(self.linear_ff(torch.flatten(model(samples[i][:, 0]), start_dim = 1)))
+            embeddings.append(F.normalize(self.linear_ff(torch.flatten(model(samples[i][:, 0]), start_dim = 1))))
 
         differences = self.gRP(embeddings)
         labels = labels.long()
+        labels = labels.to(self.device)
 
         return differences, labels
 
@@ -340,25 +340,29 @@ class RelativePositioningTask():
         model.eval()
         generator = torch.Generator().manual_seed(42)
         val_train, val_test = random_split(self.dataset_val, [0.7, 0.3], generator=generator)
-        val_train_dataloader = DataLoader(val_train, batch_size = len(val_train), shuffle = True)
-        val_test_dataloader = DataLoader(val_test, batch_size = len(val_test), shuffle = True)
-
-        samples, labels = next(iter(val_train_dataloader))
-        samples = samples.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples)
-        # print(predictions)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        # print(embeddings)
-        clf = LinearDiscriminantAnalysis()
-        clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        train_score = clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
+        val_train_dataloader = DataLoader(val_train, batch_size = 4, shuffle = True)
+        val_test_dataloader = DataLoader(val_test, batch_size = 4, shuffle = True)
+        
+        train_score = 0
+        for samples, labels in val_train_dataloader:
+            samples = samples.to(device=self.device, dtype=torch.float32)
+            predictions = F.normalize(model(samples))
+            # print(predictions)
+            embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
+            # print(embeddings)
+            clf = LinearDiscriminantAnalysis()
+            print(embeddings.shape)
+            print(labels.shape)
+            clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
+            train_score += clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
         print('Eval train score:', train_score)
 
-        samples_test, labels_test = next(iter(val_test_dataloader))
-        samples_test = samples_test.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples_test)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        test_score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
+        test_score = 0
+        for samples_test, labels_test in val_test_dataloader:
+            samples_test = samples_test.to(device=self.device, dtype=torch.float32)
+            predictions = F.normalize(model(samples_test))
+            embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
+            test_score += clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
         print('Eval test score:', test_score)
         return train_score, test_score
         
