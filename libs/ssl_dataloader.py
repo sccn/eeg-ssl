@@ -29,7 +29,7 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
             },                 
             x_params={
                 "window": 2,                                          # EEG window length in seconds
-                "sfreq": 128,                                         # sampling rate
+                "sfreq": 128,                                         # desired sampling rate
                 "subject_per_batch": 10,                              # number of subjects per batch
             },
             random_seed=None):                                               # numpy random seed
@@ -38,6 +38,7 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
         self.bidsdir = Path(data_dir)
         self.files = []
         self.M = x_params['sfreq'] * x_params['window']
+        self.sfreq = x_params['sfreq']
 
         # shuffle data
         shuffling_indices = list(range(len(self.files)))
@@ -77,6 +78,9 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
 
     def preload_raw(self, raw_file):
         EEG = mne.io.read_raw_eeglab(raw_file, preload=True, verbose='error')
+         # bring to common sampling rate
+        if EEG.info['sfreq'] != self.sfreq:
+            EEG = EEG.resample(self.sfreq)
         mat_data = EEG.get_data()
 
         if len(mat_data.shape) > 2:

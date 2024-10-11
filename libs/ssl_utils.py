@@ -204,38 +204,63 @@ class MaskedContrastiveLearningTask():
         print('Eval test score:', test_score)
         return train_score, test_score
 
-class RelativePositioningTask():
+from abc import ABC, abstractmethod
+class SSLTask(ABC):
+    def __init__(self, dataset, model):
+        self.dataset = dataset
+        self.model = model
+    
+    @abstractmethod
+    def get_task_model_params(self):
+        pass
+
+    @abstractmethod
+    def forward(self, model, samples):
+        pass
+
+    @abstractmethod
+    def loss(self, predictions, labels):
+        pass
+
+class RelativePositioning(SSLTask):
+    DEFAULT_TASK_PARAMS = {
+        'win': 50,
+        'tau_pos': 150,
+        'tau_neg': 170,
+        'n_samples': 1,
+    }
     def __init__(self,
-                dataset: torch.utils.data.Dataset,
-                win_length = 50,
-                tau_pos = 150,
-                tau_neg = 170,
-                n_samples = 1,
-                task_params={
-                    'mask_prob': 0.5
-                },
-                train_params={
-                    'num_epochs': 100,
-                    'batch_size': 10,
-                    'print_every': 10
-                },
+                dataset: torch.utils.data.IterableDataset,
+                model: torch.nn.Module,
+                task_params=DEFAULT_TASK_PARAMS,
+                device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                 verbose=False
         ):
-        self.dataset = dataset
-        self.win = win_length
-        self.tau_pos = tau_pos
-        self.tau_neg = tau_neg
-        self.n_samples = n_samples
-        self.train_params = train_params
-        self.mask_probability = task_params['mask_prob']
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.verbose=verbose
-        self.linear_ff = None
-        self.loss_linear = nn.Linear(200, 1)
+        super().__init__(dataset, model)
 
-    def train_test_split(self):
-        generator = torch.Generator().manual_seed(42)
-        self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
+        self.dataset = dataset
+        self.model = model
+        task_params_final = self.DEFAULT_TASK_PARAMS.copy()
+        task_params_final.update(task_params)
+
+        for name, value in task_params_final.items():
+            setattr(self, name, value)
+
+        self.device = device
+        self.verbose=verbose
+
+        # initialize RP-specific layers
+        self._add_layers()
+    
+    def _add_layers(self):
+        D = 200
+        sample = next(self.dataset.__iter__())
+        C, T = sample.shape
+        with torch.no_grad():
+            fake_input = torch.randn(1, C, self.win)
+            embed_dim = torch.flatten(self.model(fake_input)).shape[0]
+        self.linear_ff = nn.Linear(embed_dim, D)
+        self.loss_linear = nn.Linear(D, 1)
 
     def gRP(self, embeddings):
         differences = []
@@ -245,7 +270,26 @@ class RelativePositioningTask():
 
         return torch.stack(differences)
 
-    def forward(self, model, x, opt):
+    def get_task_model_params(self):
+        return list(self.linear_ff.parameters()) + list(self.loss_linear.parameters())
+
+    def loss(self, differences, labels):
+        linear_combination = self.loss_linear(differences)
+        # Calculate the loss
+        loss = torch.log(1 + torch.exp(-labels * linear_combination))
+        return loss.mean()
+
+    def forward(self, model, x):
+        '''
+        Relative positioning task:
+            - For each anchor window, sample n_samples positive (before and after tau_pos) and negative windows
+            - Negative context is anywhere in the sample that is more than tan_neg sample away from anchor window
+
+        @param
+            x: (N x C x T) batched raw input
+        '''
+        self.linear_ff.to(self.device).train()
+        self.loss_linear.to(self.device).train()
         samples = []
         labels = []
 
@@ -256,7 +300,13 @@ class RelativePositioningTask():
             #           <-> t_pos => t_anchor - tau_pos
             #     - t_pos < T - win
             #.    - t_pos > 0
-            pos_winds_start = np.arange(np.maximum(0, anchor_start - self.tau_pos), np.minimum(anchor_start+self.tau_pos, x.shape[2]-self.win), self.win) # valid positive samples onsets
+            pos_winds_start = []
+            # if there's enough space for positive context before  anchor window
+            if anchor_start-self.tau_pos >= 0:
+                pos_winds_start.extend(list(np.arange(anchor_start - self.tau_pos, anchor_start, self.win)))
+            # if there's enough space for positive context after anchor window
+            if anchor_start+self.win+self.tau_pos < x.shape[2]:
+                pos_winds_start.extend(list(np.arange(anchor_start+self.win, anchor_start+self.win+self.tau_pos, self.win)))
             if len(pos_winds_start) > 0:
                 # positive context
                 pos_winds = [x[:, :, sample_start:sample_start+self.win] for sample_start in np.random.choice(pos_winds_start, self.n_samples, replace=False)]
@@ -268,14 +318,21 @@ class RelativePositioningTask():
                 samples.append(torch.stack([anch, pos_w])) # if anchors[i].shape == pos_winds[i].shape])
                 labels.append(torch.ones(len(anchors)))
 
-                # negative context
-                # Negative window start t_neg:
-                #     - |t_neg - t_anchor| > tau_neg
-                #           <-> t_neg > tau_neg + t_anchor
-                #           <-> t_neg < t_anchor - tau_neg
-                #     - t_neg < T - win
-                #.    - t_neg > 0
-                neg_winds_start = np.concatenate((np.arange(0, anchor_start-self.tau_neg, self.win), np.arange(anchor_start+self.tau_neg, x.shape[2]-self.win, self.win)))
+            # negative context
+            # Negative window start t_neg:
+            #     - |t_neg - t_anchor| > tau_neg
+            #           <-> t_neg > tau_neg + t_anchor
+            #           <-> t_neg < t_anchor - tau_neg
+            #     - t_neg < T - win
+            #.    - t_neg > 0
+            neg_winds_start = []
+            # if there's enough space for negative context before  anchor window
+            if anchor_start-self.tau_neg-self.win >= 0:
+                neg_winds_start.extend(list(np.arange(0, anchor_start-self.tau_neg-self.win, self.win)))
+            # if there's enough space for negative context after anchor window
+            if anchor_start+self.win+self.tau_neg < x.shape[2]:
+                neg_winds_start.extend(list(np.arange(anchor_start+self.win+self.tau_neg, x.shape[2]-self.win, self.win)))
+            if len(neg_winds_start) > 0:
                 neg_winds = [x[:, :,sample_start:sample_start+self.win] for sample_start in np.random.choice(neg_winds_start, self.n_samples, replace=False)]
 
                 anch = torch.stack([anchors[i].clone().detach() for i in range(len(anchors))])[0]
@@ -290,40 +347,69 @@ class RelativePositioningTask():
         labels = torch.stack(labels)
 
         embeddings = []
-        if self.linear_ff is None:
-            self.linear_ff = nn.Linear(torch.flatten(model(samples[0][:, 0]), start_dim = 1).shape[1], 200)
-            opt.add_param_group({'params': list(self.linear_ff.parameters())})
-
+        # iterate through each batch sample
         for i in range(samples.shape[0]):
-            embeddings.append(self.linear_ff(torch.flatten(model(samples[i][:, 0]), start_dim = 1)))
+            embeddings.append(self.linear_ff(model(samples[i][:, 0])))
 
         differences = self.gRP(embeddings)
-        labels = labels.long()
+        labels = labels.long().to(self.device)
 
-        return differences, labels
+        loss = self.loss(differences, labels)
 
-    def loss(self, differences, labels):
-        linear_combination = self.loss_linear(differences)
-        # Calculate the loss
-        loss = torch.log(1 + torch.exp(-labels * linear_combination))
-        return loss.mean()
+        del differences, labels
 
-    def train(self, model, train_params={}):
+        return loss
+
+class Trainer():
+    # default training parameters
+    DEFAULT_TRAIN_PARAMS = {
+        'num_epochs': 100,
+        'batch_size': 10,
+        'print_every': 100,
+    }
+
+    def __init__(self, 
+                dataset: torch.utils.data.IterableDataset,
+                model: torch.nn.Module,
+                task_params={},
+                train_params=DEFAULT_TRAIN_PARAMS,
+                wandb=None,
+                device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'), 
+        ):
+        self.dataset = dataset
+        self.model = model
+        self.wandb = wandb
+        self.device = device
+        
+        train_params_final = self.DEFAULT_TRAIN_PARAMS.copy()
+        train_params_final.update(train_params)
+
+        for name, value in train_params_final.items():
+            setattr(self, name, value)
+    
+        # initialize task instance using task name and task_params
+        self.task = getattr(globals()[task_params['task']], '__call__')(self.dataset, self.model, task_params, device=self.device)
+
+        self.optimizer = torch.optim.Adam(list(model.parameters()) + self.task.get_task_model_params())
+
+    def train(self):
         print('Training on ', self.device)
-        self.train_params.update(train_params)
-        num_epochs = self.train_params['num_epochs']
-        batch_size = self.train_params['batch_size']
-        print_every = self.train_params['print_every']
+        task = self.task
+        dataset = self.dataset
+        model = self.model
+        optimizer = self.optimizer
+        num_epochs = self.num_epochs
+        batch_size = self.batch_size
+        print_every = self.print_every
+        wandb = self.wandb
 
-        optimizer = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()))
-        dataloader_train = DataLoader(self.dataset, batch_size = batch_size)
+        dataloader_train = DataLoader(dataset, batch_size = batch_size, num_workers=12)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
             for t, samples in enumerate(dataloader_train):
                 samples = samples.to(device=self.device, dtype=torch.float32)
-                differences, labels = self.forward(model, samples, optimizer)
-                loss = self.loss(differences, labels)
+                loss = task.forward(model, samples)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -333,12 +419,15 @@ class RelativePositioningTask():
                     print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
 
                 metrics = {"train/train_loss": loss.item()}
+                if wandb and wandb.run is not None:
+                    metrics = {"train/train_loss": loss.item()}
+                    wandb.log(metrics)
 
                 del samples
-                del differences
-                del labels
                 del loss
 
+        if wandb and wandb.run is not None:
+            wandb.finish()
             # eval_train_score, eval_test_score = self.finetune_eval_score(model)
 
     def finetune_eval_score(self, model):

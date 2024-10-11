@@ -257,9 +257,8 @@ class LacunaModel(nn.Module):
 class VGGSSL(SSLModel):
     def __init__(self, model_params=None):
         super().__init__(model_params)
-        self.encoder = self.create_vgg_rescaled(weights=self.weights)
-        self.__model_augment()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        vgg = self.create_vgg_rescaled(weights=self.weights)
+        self.encoder = nn.Sequential(vgg.features, vgg.flatten)
         
     def create_vgg_rescaled(self, subsample=4, feature='raw', weights='DEFAULT'):
         tmp = torchmodels.vgg16(weights=weights)
@@ -303,11 +302,6 @@ class VGGSSL(SSLModel):
                 modules.append(layer)
         vgg16_rescaled.add_module('classifier', nn.Sequential(*modules))
         return vgg16_rescaled
-
-    def __model_augment(self):
-        self.encoder = torch.nn.Sequential(self.encoder.features, self.encoder.flatten, nn.Linear(32768, 4096))
-        if self.task == "CPC":
-            self.gAR = nn.GRU(4096, 100) # hidden size = 100, per (Banville et al, 2020) experiment
 
     def forward(self, x):
         '''
