@@ -1,4 +1,5 @@
 import mne
+from mne.time_frequency import psd_array_welch
 import numpy as np
 import scipy.io
 import os
@@ -15,9 +16,18 @@ import os
 def plot_raw_eeg(data, sampling_freq):
     print(data.shape)
     print(sampling_freq)
-    info = mne.create_info(data.shape[0], sfreq=sampling_freq)
+    info = mne.create_info(data.shape[0], sfreq=sampling_freq, ch_types='eeg')
     simulated_raw = mne.io.RawArray(data, info)
-    simulated_raw.plot(show_scrollbars=False, show_scalebars=False)
+    simulated_raw.plot(show_scrollbars=False, show_scalebars=True, show=True)
+
+    # Calculate PSD
+    fmin, fmax = 0, sampling_freq/2-1  # Frequency range
+    # n_fft = 256  # Number of FFT points
+    psds, freqs = psd_array_welch(data, sfreq=sampling_freq, fmin=fmin, fmax=fmax)
+    print('freqs', freqs, 'psds', psds )
+
+    # Plot PSD
+    simulated_raw.plot_psd(fmin=fmin, fmax=fmax, average=True, show=True)
 
 def pop_loadset(file_path):
     # Load MATLAB file

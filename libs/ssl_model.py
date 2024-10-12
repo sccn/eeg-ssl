@@ -307,7 +307,8 @@ class VGGSSL(SSLModel):
         '''
         @param x: (batch_size, channel, time)
         '''
-        x = x.unsqueeze(1)
+        if len(x.shape) == 3:
+            x = x.unsqueeze(1)
         return self.encode(x)
     
     def encode(self, x):

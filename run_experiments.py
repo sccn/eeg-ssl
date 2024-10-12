@@ -12,20 +12,21 @@ if __name__ == '__main__':
     WANDB_API_KEY = os.environ['WANDB_API_KEY']
     x_params = {
             'sfreq': 128,
-            'window': 5,
+            'window': 20,
     }
     train_params={
-            'num_epochs': 100,
-            'batch_size': 128,
-            'print_every': 1,
-            'learning_rate': 0.001,
+        'num_epochs': 100,
+        'batch_size': 64,
+        'print_every': 1,
+        'learning_rate': 0.001,
     }
     task_params={
-            'task': 'RelativePositioning',
-            'win': 50,
-            'tau_pos': 100,
-            'tau_neg': 100,
-            'n_samples': 1,
+        'task': 'RelativePositioning',
+        'sfreq': 128,
+        'win': 0.5,
+        'tau_pos': 10,
+        'tau_neg': 10,
+        'n_samples': 1,
     }
     # combine all the parameters into a single config dict for logging
     config = {**x_params, **train_params, **task_params}

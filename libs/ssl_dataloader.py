@@ -3,6 +3,7 @@ import os
 import numpy as np
 import mne
 import torch
+from sklearn import preprocessing
 import csv
 import pandas as pd
 from libs.signalstore_data_utils import SignalstoreHBN
@@ -82,6 +83,8 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
         if EEG.info['sfreq'] != self.sfreq:
             EEG = EEG.resample(self.sfreq)
         mat_data = EEG.get_data()
+        scalar = preprocessing.StandardScaler()
+        mat_data = scalar.fit_transform(mat_data.T).T # scalar normalize for each feature and expects shape data x features
 
         if len(mat_data.shape) > 2:
             raise ValueError('Expect raw data to be CxT dimension')
