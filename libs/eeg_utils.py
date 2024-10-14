@@ -1,5 +1,6 @@
 import mne
 from mne.time_frequency import psd_array_welch
+from matplotlib import pyplot as plt
 import numpy as np
 import scipy.io
 import os
@@ -13,19 +14,35 @@ import os
 #     def __setitem__(self, key, value):
 #         self.__dict__[key] = value
 
-def plot_raw_eeg(data, sampling_freq):
-    print(data.shape)
-    print(sampling_freq)
-    info = mne.create_info(data.shape[0], sfreq=sampling_freq, ch_types='eeg')
-    simulated_raw = mne.io.RawArray(data, info)
-    simulated_raw.plot(show_scrollbars=False, show_scalebars=True, show=True)
+def plot_raw_eeg(data, sampling_freq, num_channels='all', channels=[]):
+    '''
+    Plot raw eeg data
+    @params
+        data - C x T
+        channels: list of channel indices to plot
+    '''
+    C, T = data.shape
+    print(f'Data shape: C, T: {C}, {T}')
+    # create a stacked plot of EEG trace using matplotlib
+    plt.figure()
+    if channels:
+        nchans =  len(channels)
+    else:
+        nchans = data.shape[0] if num_channels == 'all' else num_channels
+        channels = range(nchans)
+
+    for i, ch in enumerate(channels):
+        plt.subplot(nchans, 1, i+1)
+        plt.plot(np.arange(data.shape[1]), data[ch,:])
+        plt.yticks([])
+        plt.xticks([])
+        plt.box(False)
+    info = mne.create_info(nchans, sfreq=sampling_freq, ch_types='eeg')
+    simulated_raw = mne.io.RawArray(data[channels,:], info)
+    # simulated_raw.plot(show_scrollbars=False, show_scalebars=True, show=True)
 
     # Calculate PSD
     fmin, fmax = 0, sampling_freq/2-1  # Frequency range
-    # n_fft = 256  # Number of FFT points
-    psds, freqs = psd_array_welch(data, sfreq=sampling_freq, fmin=fmin, fmax=fmax)
-    print('freqs', freqs, 'psds', psds )
-
     # Plot PSD
     simulated_raw.plot_psd(fmin=fmin, fmax=fmax, average=True, show=True)
 
