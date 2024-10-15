@@ -122,10 +122,10 @@ class SSLModel(ABC, nn.Module):
 class Wav2VecBrainModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.ninput_channel = 128
+        self.ninput_channel = 129
         self.encoder_embed_dim = 768
         self.feature_encoder = self.FeatureEncoder(input_chan=self.ninput_channel)
-        self.context_encoder = self.TransformerLayer()
+        self.context_encoder = self.TransformerLayer(input_chan=self.ninput_channel)
         self.mask_emb = nn.Parameter(torch.FloatTensor(self.encoder_embed_dim).uniform_())
 
     def forward(self, x):
@@ -138,12 +138,12 @@ class Wav2VecBrainModel(nn.Module):
     class FeatureEncoder(nn.Module):
         def __init__(self, input_chan):
             super().__init__()
-            self.input_chan = 128
+            self.input_chan = input_chan
             self.K = [10, 3, 3, 3, 3, 2, 2]
             self.S = [2, 1, 1, 1, 1, 1, 1]
             self.conv0 = []
             self.conv0.append(nn.Sequential(
-                nn.Conv1d(self.ninput_channel, 512, kernel_size=(10,), stride=(4,), bias=False),
+                nn.Conv1d(self.input_chan, 512, kernel_size=(10,), stride=(4,), bias=False),
                 nn.GELU(),
                 nn.GroupNorm(512, 512, eps=1e-05, affine=True)
             ))
@@ -186,9 +186,9 @@ class Wav2VecBrainModel(nn.Module):
 
     class TransformerLayer(nn.Module):
         class PosEmb(nn.Module):
-            def __init__(self):
+            def __init__(self, input_chan):
                 super().__init__()
-                self.conv = nn.Conv1d(768, 768, kernel_size=(self.ninput_channel,), stride=(1,), padding=(64,), groups=16)
+                self.conv = nn.Conv1d(768, 768, kernel_size=(input_chan,), stride=(1,), padding=(64,), groups=16)
                 self.conv = nn.utils.weight_norm(self.conv, name="weight", dim=2)
                 self.activation = nn.GELU()
             def forward(self, x):
@@ -196,9 +196,9 @@ class Wav2VecBrainModel(nn.Module):
                 x = x[:, :, :-1]
                 return torch.permute(self.activation(x), (0,2,1))
 
-        def __init__(self):
+        def __init__(self, input_chan):
             super().__init__()
-            self.pos_emb = self.PosEmb()
+            self.pos_emb = self.PosEmb(input_chan)
             self.norm = nn.Sequential(
                 nn.LayerNorm((768,), eps=1e-05, elementwise_affine=True),
                 nn.Dropout(p=0.1, inplace=False)
