@@ -32,6 +32,7 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
                 "window": 2,                                          # EEG window length in seconds
                 "sfreq": 128,                                         # desired sampling rate
                 "subject_per_batch": 10,                              # number of subjects per batch
+                "preprocess": False,                                  # whether preprocess data
             },
             random_seed=None):                                               # numpy random seed
         super(HBNRestBIDSDataset).__init__()
@@ -39,6 +40,10 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
         self.bidsdir = Path(data_dir)
         self.files = []
         self.M = x_params['sfreq'] * x_params['window']
+
+        for name, value in x_params.items():
+            setattr(self, name, value)
+
         self.sfreq = x_params['sfreq']
 
         # shuffle data
@@ -67,7 +72,7 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
                         if os.path.exists(raw_file):
                             self.files.append(raw_file)
                             # load data
-                            data = self.preload_raw(raw_file)
+                            data = self.load_and_preprocess_raw(raw_file)
                             max_length   = data.shape[-1]
 
                             # sample windows, rotating through the subjects
@@ -77,12 +82,23 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
                                 if idx < data.shape[-1]-self.M:
                                     yield data[:,idx:idx+self.M] #, self.subjects[i+s]
 
-    def preload_raw(self, raw_file):
+    def load_and_preprocess_raw(self, raw_file):
         EEG = mne.io.read_raw_eeglab(raw_file, preload=True, verbose='error')
-         # bring to common sampling rate
+        
+        if self.preprocess:
+            # highpass filter
+            EEG = EEG.filter(l_freq=0.25, h_freq=25, verbose=False)
+            # remove 60Hz line noise
+            EEG = EEG.notch_filter(freqs=(60), verbose=False)
+            # bring to common sampling rate
+
         if EEG.info['sfreq'] != self.sfreq:
             EEG = EEG.resample(self.sfreq)
+
         mat_data = EEG.get_data()
+        mat_data = mat_data[0:128, :] # remove Cz reference chan
+
+        # normalize data to zero mean and unit variance
         scalar = preprocessing.StandardScaler()
         mat_data = scalar.fit_transform(mat_data.T).T # scalar normalize for each feature and expects shape data x features
 
