@@ -291,7 +291,6 @@ class RelativePositioning(SSLTask):
         Relative positioning task:
             - For each anchor window, sample n_samples positive (before and after tau_pos) and negative windows
             - Negative context is anywhere in the sample that is more than tan_neg sample away from anchor window
-
         @param
             x: (N x C x T) batched raw input
         '''
