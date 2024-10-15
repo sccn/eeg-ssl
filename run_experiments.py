@@ -13,12 +13,14 @@ if __name__ == '__main__':
     x_params = {
             'sfreq': 128,
             'window': 20,
+            'preprocess': True,
     }
     train_params={
-        'num_epochs': 100,
+        'num_epochs': 1,
         'batch_size': 64,
         'print_every': 1,
-        'learning_rate': 0.001,
+        'learning_rate': 0.00001,
+        'num_workers': 0,
     }
     task_params={
         'task': 'RelativePositioning',
@@ -50,8 +52,8 @@ if __name__ == '__main__':
     trainer = Trainer(
         dataset=dataset,
         model=model,
-        train_params=task_params,
+        train_params=train_params,
         task_params=task_params,
-        wandb=wandb
+        wandb=wandb,
     )
     trainer.train()

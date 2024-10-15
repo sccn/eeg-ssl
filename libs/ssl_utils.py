@@ -389,6 +389,11 @@ class RelativePositioning(SSLTask):
             raise ValueError('Labels must be 0 or 1')
 
         labels = labels.to(dtype=torch.long, device=self.device)
+        
+        # shuffle data
+        shuffle_indices = torch.randperm(len(differences))
+        differences = differences[shuffle_indices]
+        labels = labels[shuffle_indices]
         loss = self.criterion(differences, labels)
 
         del differences, labels
@@ -585,7 +590,7 @@ class Trainer():
                 assert not np.any(np.isnan(samples.numpy()))
 
                 loss = task.forward(model, samples)
-                print(loss)
+
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
