@@ -3,6 +3,8 @@ from torch.nn import functional as F
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader, random_split
+from cProfile import Profile
+from pstats import SortKey, Stats
 from libs import eeg_utils
 import os
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
@@ -216,7 +218,7 @@ class SSLTask(ABC):
         pass
 
     @abstractmethod
-    def loss(self, predictions, labels):
+    def criterion(self, predictions, labels):
         pass
 
 import time
@@ -241,6 +243,7 @@ class RelativePositioning(SSLTask):
         self.model = model
         task_params_final = self.DEFAULT_TASK_PARAMS.copy()
         task_params_final.update(task_params)
+        # self.loss = nn.CrossEntropyLoss()
 
         for name, value in task_params_final.items():
             setattr(self, name, value)
@@ -260,7 +263,7 @@ class RelativePositioning(SSLTask):
             fake_input = torch.randn(1, C, window_nsample)
             embed_dim = torch.flatten(self.model(fake_input)).shape[0]
         self.linear_ff = nn.Linear(embed_dim, D)
-        self.loss_linear = nn.Linear(D, 1)
+        self.loss_linear = nn.Linear(D, 2)
 
     def gRP(self, embeddings):
         '''
@@ -275,11 +278,13 @@ class RelativePositioning(SSLTask):
     def get_task_model_params(self):
         return list(self.linear_ff.parameters()) + list(self.loss_linear.parameters())
 
-    def loss(self, differences, labels):
+    def criterion(self, differences, labels):
         linear_combination = self.loss_linear(differences)
+
         # Calculate the loss
-        loss = torch.log(1 + torch.exp(-labels * linear_combination))
-        return loss.mean()
+        # loss = torch.log(1 + torch.exp(-labels * linear_combination))
+        # return loss.mean()
+        return F.cross_entropy(linear_combination, labels)
 
     def forward(self, model, x):
         '''
@@ -302,11 +307,14 @@ class RelativePositioning(SSLTask):
         tau_neg_nsample = self.sfreq * self.tau_neg
 
         # Pre-allocate the samples tensor
-        total_samples = self.n_samples * 2 * self.n_samples * x.shape[0]  # Positive and negative samples
-        samples = torch.empty(total_samples, 2, x.shape[1], window_nsample)
-        labels = torch.empty(total_samples, 1)
+        # total_samples = self.n_samples * 2 * self.n_samples * x.shape[0]  # Positive and negative samples
+        # samples = torch.empty(total_samples, 2, x.shape[1], window_nsample)
+        # labels = torch.empty(total_samples, 1)
+
+        samples = torch.Tensor()
+        labels = torch.Tensor()
         # select n_samples anchor window randomly from entire recording
-        idx = 0
+        # idx = 0
         for anchor_start in np.random.choice(np.arange(0, x.shape[2]-window_nsample, window_nsample), self.n_samples, replace=False):
             tau_pos_start = max(anchor_start - tau_pos_nsample_half, 0)
             tau_pos_end = min(anchor_start + window_nsample + tau_pos_nsample_half, x.shape[2]-window_nsample)
@@ -325,14 +333,14 @@ class RelativePositioning(SSLTask):
                         print('positive shape:', pos_w.shape)   
                         # eeg_utils.plot_raw_eeg(pos_w[0].cpu().numpy(), 128)
 
-                    samples[idx:idx+x.shape[0], 0] = anch
-                    samples[idx:idx+x.shape[0], 1] = pos_w
-                    labels[idx:idx+x.shape[0]] = 1
+                    # samples[idx:idx+x.shape[0], 0] = anch
+                    # samples[idx:idx+x.shape[0], 1] = pos_w
+                    # labels[idx:idx+x.shape[0]] = 1
 
-                    idx += x.shape[0]
+                    # idx += x.shape[0]
 
-                    # samples = torch.concat([samples, torch.stack([anch, pos_w], dim=1).to(self.device)]) # N x 2 x C x W
-                    # labels = torch.concat([labels, torch.ones(x.shape[0], device=self.device)]) 
+                    samples = torch.concat([samples, torch.stack([anch, pos_w], dim=1)]) # N x 2 x C x W
+                    labels = torch.concat([labels, torch.ones(x.shape[0])]) 
 
             # samples - n_samples*N x 2 x C x W
 
@@ -350,20 +358,24 @@ class RelativePositioning(SSLTask):
                         print('negative shape:', neg_w.shape)   
                         # eeg_utils.plot_raw_eeg(neg_w[0].cpu().numpy(), 128)
 
-                    samples[idx:idx+x.shape[0], 0] = anch
-                    samples[idx:idx+x.shape[0], 1] = neg_w
-                    labels[idx:idx+x.shape[0]] = 0
+                    # samples[idx:idx+x.shape[0], 0] = anch
+                    # samples[idx:idx+x.shape[0], 1] = neg_w
+                    # labels[idx:idx+x.shape[0]] = 0
 
-                    idx += x.shape[0]
-                    # samples = torch.concat([samples, torch.stack([anch, neg_w], dim=1).to(self.device)]) # N x 2 x C x W
-                    # labels = torch.concat([labels, torch.zeros(x.shape[0], device=self.device)])
+                    # idx += x.shape[0]
+                    samples = torch.concat([samples, torch.stack([anch, neg_w], dim=1)]) # N x 2 x C x W
+                    labels = torch.concat([labels, torch.zeros(x.shape[0])])
             # samples - n_samples*N x 2 x C x W
 
             # --> samples - 2*n_samples*N x 2 x C x W
-            
+
+        # if idx != total_samples:
+        #     print('idx', idx, 'total_samples', total_samples)
+        #     raise ValueError('Number of samples mismatch')
 
         if self.verbose:
             print('sample shape', samples.shape) # n_samples*2*n_samples*N x 2 x C x W
+
         samples = samples.to(device=self.device, dtype=torch.float32)
         embeddings = torch.stack([self.linear_ff(model(samples[:, 0])), self.linear_ff(model(samples[:, 1]))], dim=1) # batch x 2 x D
 
@@ -371,9 +383,13 @@ class RelativePositioning(SSLTask):
 
         if len(differences) != len(labels):
             raise ValueError('Number of samples and labels mismatch')
-        
-        labels = labels.long().to(self.device)
-        loss = self.loss(differences, labels)
+        if len(torch.unique(labels)) == 1:
+            print('Warning: All samples are of the same type')
+        if not torch.all(torch.isin(torch.unique(labels), torch.tensor([0, 1]))):
+            raise ValueError('Labels must be 0 or 1')
+
+        labels = labels.to(dtype=torch.long, device=self.device)
+        loss = self.criterion(differences, labels)
 
         del differences, labels
 
@@ -483,7 +499,7 @@ class TemporalShuffling(SSLTask):
         differences = self.gTS(embeddings)
         labels = labels.long()
 
-        loss = self.loss(differences, labels)
+        loss = self.criterion(differences, labels)
 
         del differences
         del labels
@@ -516,12 +532,14 @@ class Trainer():
         ):
         self.dataset = dataset
         self.model = model
-        self.wandb = wandb
         self.device = device
         self.verbose = verbose
+        self.wandb = wandb
         
         train_params_final = self.DEFAULT_TRAIN_PARAMS.copy()
         train_params_final.update(train_params)
+        print('Training parameters', train_params_final)
+        print('Task parameters', task_params)
 
         for name, value in train_params_final.items():
             setattr(self, name, value)
@@ -543,6 +561,11 @@ class Trainer():
         num_workers = self.num_workers
         wandb = self.wandb
 
+        if self.verbose:
+            print('Training with parameters:')
+            for name, value in locals().items():
+                print(f'{name}: {value}')
+
         dataloader_train = DataLoader(dataset, batch_size = batch_size, num_workers=0)
 
         # resume from checkpoint if provided
@@ -552,9 +575,17 @@ class Trainer():
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         model.to(device=self.device)
         model.train()
+
+        # if wandb is not None:
+        #     wandb.watch(model, log='all', log_freq=10)
+
         for e in range(num_epochs):
             for t, samples in enumerate(dataloader_train):
+                # check if samples has nan
+                assert not np.any(np.isnan(samples.numpy()))
+
                 loss = task.forward(model, samples)
+                print(loss)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -562,6 +593,11 @@ class Trainer():
                 if t % print_every == 0:
                     # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
                     print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
+
+                # if torch.isnan(loss).any():
+                #     print('nan detected')
+                #     eeg_utils.plot_raw_eeg(samples[0], 128, num_channels=20)
+                #     break
 
                 metrics = {"train/train_loss": loss.item()}
                 if wandb and wandb.run is not None:
