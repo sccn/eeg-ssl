@@ -1,5 +1,8 @@
 import os
-
+import sys 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from joblib import Parallel, delayed
 import numpy as np
 import mne
 import torch
@@ -34,12 +37,21 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
                 "subject_per_batch": 10,                              # number of subjects per batch
                 "preprocess": False,                                  # whether preprocess data
             },
-            random_seed=None):                                               # numpy random seed
+            random_seed=0):                                               # numpy random seed
         super(HBNRestBIDSDataset).__init__()
+        torch.manual_seed(random_seed)
         np.random.seed(random_seed)
+
         self.bidsdir = Path(data_dir)
-        self.files = []
+        if not os.path.exists('./data'):
+            os.mkdir('./data')
+        if not os.path.exists('./data/files.npy'):
+            self.files = self.get_files_with_extension_parallel(self.bidsdir)
+            np.save('./data/files.npy', self.files)
+        else:
+            self.files = np.load('./data/files.npy', allow_pickle=True)
         self.M = x_params['sfreq'] * x_params['window']
+        self.preprocess = False
 
         for name, value in x_params.items():
             setattr(self, name, value)
@@ -49,9 +61,59 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
         # shuffle data
         shuffling_indices = list(range(len(self.files)))
         np.random.shuffle(shuffling_indices)
+        self.files = self.files[shuffling_indices]
         # self.metadata_info = metadata
         # self.metadata = self.get_metadata()
-        # self.files = self.files[shuffling_indices]
+
+    def scan_directory(self, directory, extension):
+        result_files = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.name.endswith(extension):
+                    print('Adding ', entry.path)
+                    result_files.append(entry.path)
+                elif entry.is_dir():
+                    result_files.append(entry.path)  # Add directory to scan later
+        return result_files
+
+    def get_files_with_extension_parallel(self, directory, extension='.set', max_workers=-1):
+        result_files = []
+        dirs_to_scan = [directory]
+
+        # Use joblib.Parallel and delayed to parallelize directory scanning
+        while dirs_to_scan:
+            print(f"Scanning {len(dirs_to_scan)} directories...", dirs_to_scan)
+            # Run the scan_directory function in parallel across directories
+            results = Parallel(n_jobs=max_workers, prefer="threads", verbose=1)(
+                delayed(self.scan_directory)(d, extension) for d in dirs_to_scan
+            )
+            
+            # Reset the directories to scan and process the results
+            dirs_to_scan = []
+            for res in results:
+                for path in res:
+                    if os.path.isdir(path):
+                        dirs_to_scan.append(path)  # Queue up subdirectories to scan
+                    else:
+                        result_files.append(path)  # Add files to the final result
+            print(f"Current number of files: {len(result_files)}")
+
+        return result_files
+
+    def _get_recordings(self, path, extension='.set'):
+        """
+        Get all recordings from the BIDS directory.
+        """
+        if not os.path.exists(path):
+            raise ValueError("The BIDS directory does not exist.")
+
+        result_files = []
+        for entry in os.scandir(path):
+            if entry.is_dir():
+                result_files.extend(self._get_recordings(entry.path, extension))
+            elif entry.is_file() and entry.name.endswith(extension):
+                result_files.append(entry.path)
+        return result_files
 
     def __iter__(self):
         if not type(self.bidsdir) is Path:
@@ -284,11 +346,11 @@ class HBNSignalstoreDataset(torch.utils.data.IterableDataset):
 
 
 if __name__ == "__main__":
-    dataset = HBNSignalstoreDataset(
-        task_params={
-            "window": 2,
-            "sfreq": 128,
-            "task": "EC",
+    dataset = HBNRestBIDSDataset(
+        data_dir = "/mnt/nemar/openneuro/ds004186",
+        x_params = {
+            'sfreq': 128,
+            'window': 20,
+            'preprocess': False,
         },
     )
-    print(list(torch.utils.data.DataLoader(dataset)))
