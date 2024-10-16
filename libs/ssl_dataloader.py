@@ -43,13 +43,16 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
         np.random.seed(random_seed)
 
         self.bidsdir = Path(data_dir)
-        if not os.path.exists('./data'):
-            os.mkdir('./data')
-        if not os.path.exists('./data/files.npy'):
-            self.files = self.get_files_with_extension_parallel(self.bidsdir)
-            np.save('./data/files.npy', self.files)
+        # get all .set files in the bids directory
+        temp_dir = (Path().resolve() / 'data')
+        if not os.path.exists(temp_dir):
+            os.mkdir(temp_dir)
+        if not os.path.exists(temp_dir / 'files.npy'):
+            self.files = self.get_files_with_extension_parallel(self.bidsdir, extension='.set')
+            np.save(temp_dir / 'files.npy', self.files)
         else:
-            self.files = np.load('./data/files.npy', allow_pickle=True)
+            self.files = np.load(temp_dir / 'files.npy', allow_pickle=True)
+
         self.M = x_params['sfreq'] * x_params['window']
         self.preprocess = False
 
@@ -67,13 +70,16 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
 
     def scan_directory(self, directory, extension):
         result_files = []
+        directory_to_ignore = ['.git']
         with os.scandir(directory) as entries:
             for entry in entries:
                 if entry.is_file() and entry.name.endswith(extension):
                     print('Adding ', entry.path)
                     result_files.append(entry.path)
                 elif entry.is_dir():
-                    result_files.append(entry.path)  # Add directory to scan later
+                    # check that entry path doesn't contain any name in ignore list
+                    if not any(name in entry.name for name in directory_to_ignore):
+                        result_files.append(entry.path)  # Add directory to scan later
         return result_files
 
     def get_files_with_extension_parallel(self, directory, extension='.set', max_workers=-1):
@@ -100,49 +106,32 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
 
         return result_files
 
-    def _get_recordings(self, path, extension='.set'):
-        """
-        Get all recordings from the BIDS directory.
-        """
-        if not os.path.exists(path):
-            raise ValueError("The BIDS directory does not exist.")
-
-        result_files = []
-        for entry in os.scandir(path):
-            if entry.is_dir():
-                result_files.extend(self._get_recordings(entry.path, extension))
-            elif entry.is_file() and entry.name.endswith(extension):
-                result_files.append(entry.path)
-        return result_files
-
     def __iter__(self):
-        if not type(self.bidsdir) is Path:
-            self.bidsdir = Path(self.bidsdir)
-        for entry in scandir(self.bidsdir):
-            if entry.is_dir() and entry.name.startswith('sub-'):
-                subject_dir = entry.name
-                subject = subject_dir.split('-')[1]
-                subject_dir_path = self.bidsdir / subject_dir
-                eeg_dir = subject_dir_path / "eeg"
+        # set up multi-processing
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:  # single-process data loading, return the full iterator
+            iter_start = 0
+            iter_end = len(self.files)
+        else:  # in a worker process
+            # split workload
+            per_worker = int(math.ceil(len(self.files) / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, len(self.files))
+            print('worker_id', worker_id, 'iter_start', iter_start, 'iter_end', iter_end)
+        for i in range(iter_start, iter_end):
+            raw_file = self.files[i]
+            if os.path.exists(raw_file):
+                # load data
+                data = self.load_and_preprocess_raw(raw_file)
+                max_length   = data.shape[-1]
 
-                tasks = ['EC', 'EO']
-                runs  = [list(range(1, 6)), list(range(1, 6))]
-                for t, task in enumerate(tasks):
-                    for run in runs[t]:
-                        # get file by name pattern subject_dir*task*run_eeg.set
-                        raw_file = eeg_dir / f"{subject_dir}_task-{task}_run-{run}_eeg.set"
-                        if os.path.exists(raw_file):
-                            self.files.append(raw_file)
-                            # load data
-                            data = self.load_and_preprocess_raw(raw_file)
-                            max_length   = data.shape[-1]
-
-                            # sample windows, rotating through the subjects
-                            # to ensure equal contribution among subject per batch
-                            indices  = np.arange(0, max_length-self.M, self.M)
-                            for idx in indices:
-                                if idx < data.shape[-1]-self.M:
-                                    yield data[:,idx:idx+self.M] #, self.subjects[i+s]
+                # sample windows, rotating through the subjects
+                # to ensure equal contribution among subject per batch
+                indices  = np.arange(0, max_length-self.M, self.M)
+                for idx in indices:
+                    if idx < data.shape[-1]-self.M:
+                        yield data[:,idx:idx+self.M] #, self.subjects[i+s]
 
     def load_and_preprocess_raw(self, raw_file):
         EEG = mne.io.read_raw_eeglab(raw_file, preload=True, verbose='error')
@@ -347,7 +336,7 @@ class HBNSignalstoreDataset(torch.utils.data.IterableDataset):
 
 if __name__ == "__main__":
     dataset = HBNRestBIDSDataset(
-        data_dir = "/mnt/nemar/openneuro/ds004186",
+        data_dir = "/mnt/nemar/openneuro/ds004186", # ds004186 ds005510
         x_params = {
             'sfreq': 128,
             'window': 20,
