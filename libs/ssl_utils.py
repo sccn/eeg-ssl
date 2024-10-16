@@ -205,9 +205,18 @@ class MaskedContrastiveLearningTask():
 
 from abc import ABC, abstractmethod
 class SSLTask(ABC):
-    def __init__(self, dataset, model):
+    DEFAULT_TASK_PARAMS = {
+        'seed': 0,
+    }
+    def __init__(self, dataset, model, task_params=DEFAULT_TASK_PARAMS):
         self.dataset = dataset
         self.model = model
+        self.seed = task_params['seed']
+        torch.manual_seed(self.seed)
+        torch.cuda.manual_seed(self.seed)
+        torch.cuda.manual_seed_all(self.seed)
+        np.random.seed(self.seed)
+        
     
     @abstractmethod
     def get_task_model_params(self):
@@ -229,6 +238,7 @@ class RelativePositioning(SSLTask):
         'tau_pos': 20,
         'tau_neg': 30,
         'n_samples': 1,
+        'seed': 0,
     }
     def __init__(self,
                 dataset: torch.utils.data.IterableDataset,
@@ -533,12 +543,20 @@ class Trainer():
                 wandb=None,
                 verbose=False,
                 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'), 
+                seed=9,
         ):
         self.dataset = dataset
         self.model = model
         self.device = device
         self.verbose = verbose
         self.wandb = wandb
+
+        self.seed = seed
+        torch.manual_seed(self.seed)
+        torch.cuda.manual_seed(self.seed)
+        torch.cuda.manual_seed_all(self.seed)
+        np.random.seed(self.seed)
+
         
         train_params_final = self.DEFAULT_TRAIN_PARAMS.copy()
         train_params_final.update(train_params)
@@ -564,26 +582,35 @@ class Trainer():
         print_every = self.print_every
         num_workers = self.num_workers
         wandb = self.wandb
+        epoch_start = 0
 
         if self.verbose:
             print('Training with parameters:')
             for name, value in locals().items():
                 print(f'{name}: {value}')
 
-        dataloader_train = DataLoader(dataset, batch_size = batch_size, num_workers=0)
+        dataloader_train = DataLoader(dataset, batch_size = batch_size, num_workers=num_workers)
 
         # resume from checkpoint if provided
         if checkpoint is not None and os.path.exists(checkpoint):
-            checkpoint = torch.load(checkpoint)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            checkpoint_dict = torch.load(checkpoint, weights_only=True)
+            print('Resuming from checkpoint ', checkpoint, ' at epoch ', checkpoint_dict['epoch'])
+            model.load_state_dict(checkpoint_dict['model_state_dict'])
+            optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
+            epoch_start = checkpoint_dict['epoch'] + 1 # assuming checkpoint is saved at the end of each epoch
+
+        # Move the model and optimizer state to the desired device
         model.to(device=self.device)
         model.train()
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(self.device)
 
-        # if wandb is not None:
-        #     wandb.watch(model, log='all', log_freq=10)
+        if wandb and wandb.run:
+            wandb.watch(model, log='all', log_freq=100)
 
-        for e in range(num_epochs):
+        for e in range(epoch_start, num_epochs):
             for t, samples in enumerate(dataloader_train):
                 # check if samples has nan
                 assert not np.any(np.isnan(samples.numpy()))
@@ -597,11 +624,6 @@ class Trainer():
                 if t % print_every == 0:
                     # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
                     print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
-
-                # if torch.isnan(loss).any():
-                #     print('nan detected')
-                #     eeg_utils.plot_raw_eeg(samples[0], 128, num_channels=20)
-                #     break
 
                 metrics = {"train/train_loss": loss.item()}
                 if wandb and wandb.run is not None:
@@ -619,7 +641,6 @@ class Trainer():
                     }, os.path.join(wandb.run.dir, f"checkpoint_epoch-{e}_iteration-{t}"))
 
                 del samples
-                del loss
 
             if wandb and wandb.run is not None:
                 torch.save({
@@ -631,7 +652,9 @@ class Trainer():
 
         if wandb and wandb.run is not None:
             torch.save({
+                'epoch': e,
                 'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
                 'loss': loss,
             }, os.path.join(wandb.run.dir, f"checkpoint_final"))
             wandb.finish()
