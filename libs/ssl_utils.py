@@ -218,6 +218,12 @@ class SSLTask(ABC):
         np.random.seed(self.seed)
         
     
+    @property
+    @abstractmethod
+    def task_module(self) -> nn.Module:
+        """Task specific module(s) to be trained"""
+        pass
+
     @abstractmethod
     def get_task_model_params(self):
         pass
@@ -274,6 +280,10 @@ class RelativePositioning(SSLTask):
             embed_dim = torch.flatten(self.model(fake_input)).shape[0]
         self.linear_ff = nn.Linear(embed_dim, D)
         self.loss_linear = nn.Linear(D, 2)
+    
+    @property
+    def task_module(self) -> nn.Module:
+        return nn.Sequential(self.linear_ff, self.loss_linear)
 
     def gRP(self, embeddings):
         '''
@@ -596,6 +606,7 @@ class Trainer():
             checkpoint_dict = torch.load(checkpoint, weights_only=True)
             print('Resuming from checkpoint ', checkpoint, ' at epoch ', checkpoint_dict['epoch'])
             model.load_state_dict(checkpoint_dict['model_state_dict'])
+            self.task.task_module.load_state_dict(checkpoint_dict['task_module_state_dict'])
             optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
             epoch_start = checkpoint_dict['epoch'] + 1 # assuming checkpoint is saved at the end of each epoch
 
@@ -636,16 +647,19 @@ class Trainer():
                         'epoch': e,
                         'iteration': t,
                         'model_state_dict': model.state_dict(),
+                        'task_module_state_dict': self.task.task_module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'loss': loss,
                     }, os.path.join(wandb.run.dir, f"checkpoint_epoch-{e}_iteration-{t}"))
 
                 del samples
+                print(self.task.task_module[0].params())
 
             if wandb and wandb.run is not None:
                 torch.save({
                     'epoch': e,
                     'model_state_dict': model.state_dict(),
+                    'task_module_state_dict': self.task.task_module.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'loss': loss,
                 }, os.path.join(wandb.run.dir, f"checkpoint_epoch-{e}"))
@@ -654,6 +668,7 @@ class Trainer():
             torch.save({
                 'epoch': e,
                 'model_state_dict': model.state_dict(),
+                'task_module_state_dict': self.task.task_module.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': loss,
             }, os.path.join(wandb.run.dir, f"checkpoint_final"))
