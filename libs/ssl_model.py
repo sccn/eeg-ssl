@@ -122,7 +122,7 @@ class SSLModel(ABC, nn.Module):
 class Wav2VecBrainModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.ninput_channel = 129
+        self.ninput_channel = 128
         self.encoder_embed_dim = 768
         self.feature_encoder = self.FeatureEncoder(input_chan=self.ninput_channel)
         self.context_encoder = self.TransformerLayer(input_chan=self.ninput_channel)

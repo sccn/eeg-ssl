@@ -18,11 +18,11 @@ if __name__ == '__main__':
         'preprocess': False,
     }
     train_params={
-        'num_epochs': 10,
+        'num_epochs': 100,
         'batch_size': 64,
         'print_every': 1,
         'learning_rate': 0.00001,
-        'num_workers': 10,
+        'num_workers': 12,
     }
     task_params={
         'task': 'RelativePositioning',
@@ -43,16 +43,18 @@ if __name__ == '__main__':
     )
     config['dataset'] = 'ds004186'
 
-    model = VGGSSL()
-    config['model'] = 'VGGSSL'
+    model = Wav2VecBrainModel()
+    config['model'] = 'Wav2VecBrainModel'
     wandb.init(
         # Set the project where this run will be logged
         project="ssl-hbn-rest", 
+        # id="relative-positioning-with-multiprocess-dataloader",
         # We pass a run name (otherwise it’ll be randomly assigned, like sunshine-lollypop-10)
         # name=f"experiment_{run}", 
         # Track hyperparameters and run metadata
         config=config,
-        resume="allow")
+        # resume="allow",
+    )
 
     trainer = Trainer(
         dataset=dataset,
@@ -65,3 +67,4 @@ if __name__ == '__main__':
     config['seed'] = seed
 
     trainer.train()
+    # trainer.train(checkpoint='/home/dung/eeg-ssl/wandb/run-20241016_111351-relative-positioning-with-multiprocess-dataloader/files/checkpoint_epoch-9')

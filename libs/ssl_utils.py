@@ -278,6 +278,7 @@ class RelativePositioning(SSLTask):
         with torch.no_grad():
             fake_input = torch.randn(1, C, window_nsample)
             embed_dim = torch.flatten(self.model(fake_input)).shape[0]
+            self.flattened_encoder_embed_dim = embed_dim
         self.linear_ff = nn.Linear(embed_dim, D)
         self.loss_linear = nn.Linear(D, 2)
     
@@ -396,7 +397,7 @@ class RelativePositioning(SSLTask):
             print('sample shape', samples.shape) # n_samples*2*n_samples*N x 2 x C x W
 
         samples = samples.to(device=self.device, dtype=torch.float32)
-        embeddings = torch.stack([self.linear_ff(model(samples[:, 0])), self.linear_ff(model(samples[:, 1]))], dim=1) # batch x 2 x D
+        embeddings = torch.stack([self.linear_ff(torch.flatten(model(samples[:, 0]), start_dim=1)), self.linear_ff(torch.flatten(model(samples[:, 1]), start_dim=1))], dim=1) # batch x 2 x D
 
         differences = self.gRP(embeddings)
 
@@ -599,7 +600,6 @@ class Trainer():
             for name, value in locals().items():
                 print(f'{name}: {value}')
 
-        dataloader_train = DataLoader(dataset, batch_size = batch_size, num_workers=num_workers)
 
         # resume from checkpoint if provided
         if checkpoint is not None and os.path.exists(checkpoint):
@@ -622,6 +622,8 @@ class Trainer():
             wandb.watch(model, log='all', log_freq=100)
 
         for e in range(epoch_start, num_epochs):
+            dataset._shuffle()
+            dataloader_train = DataLoader(dataset, batch_size = batch_size, num_workers=num_workers)
             for t, samples in enumerate(dataloader_train):
                 # check if samples has nan
                 assert not np.any(np.isnan(samples.numpy()))
@@ -653,7 +655,6 @@ class Trainer():
                     }, os.path.join(wandb.run.dir, f"checkpoint_epoch-{e}_iteration-{t}"))
 
                 del samples
-                print(self.task.task_module[0].params())
 
             if wandb and wandb.run is not None:
                 torch.save({
@@ -662,7 +663,7 @@ class Trainer():
                     'task_module_state_dict': self.task.task_module.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'loss': loss,
-                }, os.path.join(wandb.run.dir, f"checkpoint_epoch-{e}"))
+                }, os.path.join(wandb.run.dir, f"checkpoint_epoch-{e}_final"))
 
         if wandb and wandb.run is not None:
             torch.save({

@@ -61,6 +61,9 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
 
         self.sfreq = x_params['sfreq']
 
+        self._shuffle # in plac
+
+    def _shuffle(self):
         # shuffle data
         shuffling_indices = list(range(len(self.files)))
         np.random.shuffle(shuffling_indices)
@@ -118,7 +121,7 @@ class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
             worker_id = worker_info.id
             iter_start = worker_id * per_worker
             iter_end = min(iter_start + per_worker, len(self.files))
-            print('worker_id', worker_id, 'iter_start', iter_start, 'iter_end', iter_end)
+            print('worker_id', worker_id, 'iter_start', iter_start, 'iter_end', iter_end, '\n')
         for i in range(iter_start, iter_end):
             raw_file = self.files[i]
             if os.path.exists(raw_file):
