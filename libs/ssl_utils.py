@@ -9,6 +9,7 @@ import os
 #import wandb
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 import itertools
+from abc import ABC, abstractmethod
 
 class MaskedContrastiveLearningTask():
     def __init__(self,
@@ -197,38 +198,45 @@ class MaskedContrastiveLearningTask():
         print('Eval test score:', test_score)
         return train_score, test_score
 
-class RelativePositioningTask():
+class SSLTask(ABC):
+    def __init__(self, dataset, model):
+        self.dataset = dataset
+        self.model = model
+    
+    @abstractmethod
+    def _add_layers(self, model, opt):
+        pass
+
+    @abstractmethod
+    def forward(self, model, samples, opt):
+        pass
+
+    @abstractmethod
+    def loss(self, outputs):
+        pass
+
+class RelativePositioningTask(SSLTask):
     def __init__(self,
-                train_dataset: torch.utils.data.Dataset,
-                val_dataset: torch.utils.data.Dataset,
-                win_length = 30,
-                tau_pos = 75,
-                tau_neg = 85,
-                n_samples = 1,
                 task_params={
-                    'mask_prob': 0.5
-                },
-                train_params={
-                    'num_epochs': 100,
-                    'batch_size': 10,
-                    'print_every': 10
+                    'win_length': 30,
+                    'tau_pos': 75,
+                    'tau_neg': 85,
+                    'n_samples': 1,
+                    'emb_length': 200,
+                    'channels': 128
                 },
                 verbose=False
         ):
-        self.dataset_train = train_dataset
-        self.dataset_val = val_dataset
-        self.win = win_length
-        self.tau_pos = tau_pos
-        self.tau_neg = tau_neg
-        self.n_samples = n_samples
+        self.win = task_params['win_length']
+        self.tau_pos = task_params['tau_pos']
+        self.tau_neg = task_params['tau_neg']
+        self.n_samples = task_params['n_samples']
+        self.emb_length = task_params['emb_length']
+        self.C = task_params['channels']
 
-        self.train_params = train_params
-        self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
-        self.linear_ff = None
-        self.loss_linear = nn.Linear(200, 1)
-        self.loss_linear.to(self.device)
+        self.loss_linear_ff = None
 
     def gRP(self, embeddings):
         differences = []
@@ -238,9 +246,24 @@ class RelativePositioningTask():
 
         return torch.stack(differences)
 
+    def _add_layers(self, model, opt):
+        D = self.emb_length
+        with torch.no_grad():
+            fake_input = torch.randn(1, self.C, self.win).to(self.device)
+            embed_dim = torch.flatten(model(fake_input)).shape[0]
+        self.linear_ff = nn.Linear(embed_dim, D)
+        self.linear_ff.to(self.device)
+        opt.add_param_group({'params': list(self.linear_ff.parameters())})
+        self.loss_linear = nn.Linear(D, 1)
+        self.loss_linear.to(self.device)
+        opt.add_param_group({'params': list(self.loss_linear.parameters())})
+
     def forward(self, model, x, opt):
         samples = []
         labels = []
+        
+        if self.loss_linear_ff is None:
+          self._add_layers(model, opt)
 
         for anchor_start in np.arange(0, x.shape[2]-self.win, self.win): # non-overlapping anchor window
             # Positive window start t_pos:
@@ -281,127 +304,52 @@ class RelativePositioningTask():
         if len(samples) != len(labels):
             raise ValueError('Number of samples and labels mismatch')
         labels = torch.stack(labels)
+        labels = labels.to(self.device)
 
         embeddings = []
         if self.linear_ff is None:
-            self.linear_ff = nn.Linear(torch.flatten(model(samples[0][:, 0]), start_dim = 1).shape[1], 200)
-            self.linear_ff.to(self.device)
+            self.linear_ff = nn.Linear(torch.flatten(model.feature_encoder(samples[0][:, 0]), start_dim = 1).shape[1], 200)
             opt.add_param_group({'params': list(self.linear_ff.parameters())})
 
         for i in range(samples.shape[0]):
-            embeddings.append(F.normalize(self.linear_ff(torch.flatten(model(samples[i][:, 0]), start_dim = 1))))
+            embeddings.append(self.linear_ff(torch.flatten(model.feature_encoder(samples[i][:, 0]), start_dim = 1)))
 
         differences = self.gRP(embeddings)
         labels = labels.long()
-        labels = labels.to(self.device)
 
-        return differences, labels
+        return [differences, labels]
 
-    def loss(self, differences, labels):
+    def loss(self, outputs):
+        differences = outputs[0]
+        labels = outputs[1]
         linear_combination = self.loss_linear(differences)
         # Calculate the loss
         loss = torch.log(1 + torch.exp(-labels * linear_combination))
         return loss.mean()
-
-    def train(self, model, train_params={}):
-        print('Training on ', self.device)
-        self.train_params.update(train_params)
-        num_epochs = self.train_params['num_epochs']
-        batch_size = self.train_params['batch_size']
-        print_every = self.train_params['print_every']
-
-        optimizer = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()))
-        dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
-        model.to(device=self.device)
-        model.train()
-        for e in range(num_epochs):
-            for t, (samples, _) in enumerate(dataloader_train):
-                samples = samples.to(device=self.device, dtype=torch.float32)
-                differences, labels = self.forward(model, samples, optimizer)
-                loss = self.loss(differences, labels)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                if t % print_every == 0:
-                    # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
-                    print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
-
-                metrics = {"train/train_loss": loss.item()}
-
-                del samples
-                del differences
-                del labels
-                del loss
-
-            eval_train_score, eval_test_score = self.finetune_eval_score(model)
-
-    def finetune_eval_score(self, model):
-        model.eval()
-        generator = torch.Generator().manual_seed(42)
-        val_train, val_test = random_split(self.dataset_val, [0.7, 0.3], generator=generator)
-        val_train_dataloader = DataLoader(val_train, batch_size = 4, shuffle = True)
-        val_test_dataloader = DataLoader(val_test, batch_size = 4, shuffle = True)
-        
-        train_score = 0
-        for samples, labels in val_train_dataloader:
-            samples = samples.to(device=self.device, dtype=torch.float32)
-            predictions = F.normalize(model(samples))
-            # print(predictions)
-            embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-            # print(embeddings)
-            clf = LinearDiscriminantAnalysis()
-            print(embeddings.shape)
-            print(labels.shape)
-            clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-            train_score += clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        print('Eval train score:', train_score)
-
-        test_score = 0
-        for samples_test, labels_test in val_test_dataloader:
-            samples_test = samples_test.to(device=self.device, dtype=torch.float32)
-            predictions = F.normalize(model(samples_test))
-            embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-            test_score += clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
-        print('Eval test score:', test_score)
-        return train_score, test_score
         
 class TemporalShufflingTask():
     def __init__(self,
-                dataset: torch.utils.data.Dataset,
-                win_length = 50,
-                tau_pos = 150,
-                tau_neg = 151,
-                n_samples = 1,
-                stride = 1,
                 task_params={
-                    'mask_prob': 0.5
-                },
-                train_params={
-                    'num_epochs': 100,
-                    'batch_size': 10,
-                    'print_every': 10
+                    'win_length': 30,
+                    'tau_pos': 90,
+                    'tau_neg': 100,
+                    'n_samples': 1,
+                    'stride': 1,
+                    'emb_length': 200,
+                    'channels': 128
                 },
                 verbose=False
         ):
-        self.dataset = dataset
-        self.train_test_split()
-        self.win = win_length
-        self.tau_pos = tau_pos
-        self.tau_neg = tau_neg
-        self.n_samples = n_samples
-        self.stride = stride
-
-        self.train_params = train_params
-        self.mask_probability = task_params['mask_prob']
+        self.win = task_params['win_length']
+        self.tau_pos = task_params['tau_pos']
+        self.tau_neg = task_params['tau_neg']
+        self.n_samples = task_params['n_samples']
+        self.stride = task_params['stride']
+        self.emb_length = task_params['emb_length']
+        self.C = task_params['channels']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
-        self.linear_ff = None
-        self.loss_linear = nn.Linear(400, 1)
-
-    def train_test_split(self):
-        generator = torch.Generator().manual_seed(42)
-        self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
+        self.loss_linear_ff = None
 
     def gTS(self, embeddings):
         differences = []
@@ -409,14 +357,29 @@ class TemporalShufflingTask():
         for i in range(len(embeddings)):
           differences.append(torch.cat((torch.abs(embeddings[i][0] - embeddings[i][1]), torch.abs(embeddings[i][1] - embeddings[i][2])), dim = 0))
 
-        return torch.stack(differences)
+        return torch.stack(differences)        
+
+    def _add_layers(self, model, opt):
+        D = self.emb_length
+        with torch.no_grad():
+            fake_input = torch.randn(1, self.C, self.win).to(self.device)
+            embed_dim = torch.flatten(model(fake_input)).shape[0]
+        self.linear_ff = nn.Linear(embed_dim, D)
+        self.linear_ff.to(self.device)
+        opt.add_param_group({'params': list(self.linear_ff.parameters())})
+        self.loss_linear = nn.Linear(2*D, 1)
+        self.loss_linear.to(self.device)
+        opt.add_param_group({'params': list(self.loss_linear.parameters())})
 
     def forward(self, model, x, opt):
         samples = []
         labels = []
+        
+        if self.loss_linear_ff is None:
+          self._add_layers(model, opt)
 
         tau_pos = self.tau_pos
-        for pos_start in np.arange(0, x.shape[2], tau_pos): # non-overlapping positive contexts
+        for pos_start in np.arange(0, x.shape[2]-self.win, self.win): # non-overlapping positive contexts
             if pos_start + tau_pos < x.shape[2]:
                 pos_winds = [x[:, :, pos_start:pos_start+self.win], x[:, :, pos_start+self.win*2:pos_start+self.win*3]] # two positive windows\
                 inorder = torch.stack(pos_winds[:1] + [x[:, :, pos_start+self.win:pos_start+self.win*2]] + pos_winds[1:])
@@ -424,7 +387,8 @@ class TemporalShufflingTask():
                 labels.extend(torch.ones(2))
 
                 # for negative windows, want both sides of anchor window
-                neg_winds_start = np.concatenate((np.arange(0, pos_start-self.tau_neg-self.win, self.stride), np.arange(pos_start+tau_pos+self.tau_neg, x.shape[2]-self.win, self.stride)))
+                buffer = int((self.tau_neg - self.tau_pos)/2)
+                neg_winds_start = np.concatenate((np.arange(0, pos_start-buffer-self.win, self.stride), np.arange(pos_start+tau_pos+buffer, x.shape[2]-self.win, self.stride)))
                 selected_neg_start = np.random.choice(neg_winds_start, 1, replace=False)[0]
                 disorder = torch.stack(pos_winds[:1] + [x[:,:,selected_neg_start:selected_neg_start+self.win]] + pos_winds[1:]) # two positive windows, disorder sample added to the end
                 samples.extend([disorder, torch.flip(disorder, dims = [0])])
@@ -439,6 +403,7 @@ class TemporalShufflingTask():
 
         if self.linear_ff is None:
             self.linear_ff = nn.Linear(torch.flatten(model(samples[0][:, 0]), start_dim = 1).shape[1], 200)
+            self.linear_ff.to(self.device)
             opt.add_param_group({'params': list(self.linear_ff.parameters())})
 
         for i in range(samples.shape[0]):
@@ -446,118 +411,46 @@ class TemporalShufflingTask():
 
         differences = self.gTS(embeddings)
         labels = labels.long()
+        labels = labels.to(self.device)
 
-        return differences, labels
+        return [differences, labels]
 
-    def loss(self, differences, labels):
+    def loss(self, outputs):
+        differences = outputs[0]
+        labels = outputs[1]
         linear_combination = self.loss_linear(differences)
         # Calculate the loss
         loss = torch.log(1 + torch.exp(-labels * linear_combination))
         return loss.mean()
 
-    def train(self, model, train_params={}):
-        print('Training on ', self.device)
-        self.train_params.update(train_params)
-        num_epochs = self.train_params['num_epochs']
-        batch_size = self.train_params['batch_size']
-        print_every = self.train_params['print_every']
-
-        optimizer  = torch.optim.Adam(list(model.parameters()) + list(self.loss_linear.parameters()))
-        dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
-        model.to(device=self.device)
-        model.train()
-        for e in range(num_epochs):
-            for t, (samples, _) in enumerate(dataloader_train):
-                samples = samples.to(device=self.device, dtype=torch.float32)
-                differences, labels = self.forward(model, samples, optimizer)
-                loss = self.loss(differences, labels)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                if t % print_every == 0:
-                    # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
-                    print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
-
-                metrics = {"train/train_loss": loss.item()}
-
-                del samples
-                del differences
-                del labels
-                del loss
-
-            eval_train_score, eval_test_score = self.finetune_eval_score(model)
-
-    def finetune_eval_score(self, model):
-        model.eval()
-        generator = torch.Generator().manual_seed(42)
-        val_train, val_test = random_split(self.dataset_val, [0.7, 0.3], generator=generator)
-        val_train_dataloader = DataLoader(val_train, batch_size = len(val_train), shuffle = True)
-        val_test_dataloader = DataLoader(val_test, batch_size = len(val_test), shuffle = True)
-
-        samples, labels = next(iter(val_train_dataloader))
-        samples = samples.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples)
-        # print(predictions)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        # print(embeddings)
-        clf = LinearDiscriminantAnalysis()
-        clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        train_score = clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        print('Eval train score:', train_score)
-
-        samples_test, labels_test = next(iter(val_test_dataloader))
-        samples_test = samples_test.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples_test)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        test_score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
-        print('Eval test score:', test_score)
-        return train_score, test_score
-        samples_test, labels_test = next(iter(val_test_dataloader))
-        samples_test = samples_test.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples_test)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        test_score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
-        print('Eval test score:', test_score)
-        return train_score, test_score
-
 class CPC():
     def __init__(self,
-                dataset: torch.utils.data.Dataset,
-                win_length = 50,
-                tau_pos = 150,
-                tau_neg = 151,
-                n_samples = 1,
-                stride = 1,
                 task_params={
-                    'mask_prob': 0.5
-                },
-                train_params={
-                    'num_epochs': 100,
-                    'batch_size': 10,
-                    'print_every': 10
+                    'win_length': 30,
+                    'tau_pos': 150,
+                    'tau_neg': 151,
+                    'n_samples': 1,
+                    'Nc': 2,
+                    'Np': 2,
+                    'Nb': 2,
+                    'emb_length': 200,
+                    'channels': 128
                 },
                 verbose=False
         ):
-        self.dataset = dataset
-        self.train_test_split()
-        self.win = win_length
-        self.tau_pos = tau_pos
-        self.tau_neg = tau_neg
-        self.n_samples = n_samples
-        self.stride = stride
-        self.Nc = 5
-        self.Np = 2
-        self.Nb = 2
+        self.win = task_params['win_length']
+        self.tau_pos = task_params['tau_pos']
+        self.tau_neg = task_params['tau_neg']
+        self.n_samples = task_params['n_samples']
+        self.Nc = task_params['Nc']
+        self.Np = task_params['Np']
+        self.Nb = task_params['Nb']
+        self.emb_length = task_params['emb_length']
+        self.C = task_params['channels']
         self.linear_ff = None
 
-        self.train_params = train_params
-        self.mask_probability = task_params['mask_prob']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.verbose=verbose
-        self.gru = nn.GRU(200, 100)
-        self.linear_gAR = nn.Linear(100*self.Nc, 100)
-        self.linear_fk = nn.Linear(100, 200)
 
     def gAR(self, x):
         x = self.gru(x)[0]
@@ -568,15 +461,33 @@ class CPC():
         x = self.linear_fk(c)
         return torch.matmul(h, x)
 
-    def train_test_split(self):
-        generator = torch.Generator().manual_seed(42)
-        self.dataset_train, self.dataset_val = torch.utils.data.random_split(self.dataset, [0.7,0.3], generator=generator)
+    def _add_layers(self, model, opt):
+        D = self.emb_length
+        with torch.no_grad():
+            fake_input = torch.randn(1, self.C, self.win).to(self.device)
+            embed_dim = torch.flatten(model(fake_input)).shape[0]
+        self.linear_ff = nn.Linear(embed_dim, D)
+        self.linear_ff.to(self.device)
+        opt.add_param_group({'params': list(self.linear_ff.parameters())})
+        self.gru = nn.GRU(D, 100)
+        self.gru.to(self.device)
+        opt.add_param_group({'params': list(self.gru.parameters())})
+        self.linear_gAR = nn.Linear(100*self.Nc, 100)
+        self.linear_gAR.to(self.device)
+        opt.add_param_group({'params': list(self.linear_gAR.parameters())})
+        self.linear_fk = nn.Linear(100, 200)
+        self.linear_fk.to(self.device)
+        opt.add_param_group({'params': list(self.linear_fk.parameters())})
 
     def forward(self, model, x, opt):
         context_windows_all = []
         future_windows_all = []
         negative_windows_all = []
         ct = []
+
+        if self.linear_ff is None:
+          self._add_layers(model, opt)
+
         for ti in np.arange(0, x.shape[2]-self.win*(self.Nc+self.Np), self.win*self.Nc):
             context_windows = []
             # ti is the index of the first window in the context array
@@ -587,6 +498,7 @@ class CPC():
 
             if self.linear_ff is None:
                 self.linear_ff = nn.Linear(torch.flatten(model.feature_encoder(c_w[:, 0]), start_dim = 1).shape[1], 200)
+                self.linear_ff.to(self.device)
                 opt.add_param_group({'params': list(self.linear_ff.parameters())})
 
             embeddings = self.linear_ff(torch.flatten(model.feature_encoder(c_w[:, 0]), start_dim = 1))
@@ -619,9 +531,12 @@ class CPC():
                 negative_embeddings[i].append(self.linear_ff(torch.flatten(model.feature_encoder(negative_windows_all[i, j, :, 0]), start_dim = 1)))
             negative_embeddings[i] = torch.stack(negative_embeddings[i])
 
-        return torch.stack(ct), torch.stack(future_embeddings), torch.stack(negative_embeddings)
+        return [torch.stack(ct), torch.stack(future_embeddings), torch.stack(negative_embeddings)]
 
-    def loss(self, ct, future_embeddings, negative_embeddings):
+    def loss(self, outputs):
+        ct = outputs[0]
+        future_embeddings = outputs[1]
+        negative_embeddings = outputs[2]
         loss = 0
         for i in range(ct.shape[0]):
             for j in range(future_embeddings.shape[1]):
@@ -633,25 +548,61 @@ class CPC():
                 loss -= torch.log(num/den)
         return loss
 
-    def train(self, model, train_params={}):
+class Trainer():
+    # default training parameters
+    DEFAULT_TRAIN_PARAMS = {
+        'num_epochs': 100,
+        'batch_size': 1,
+        'print_every': 100,
+        'num_workers': 0,
+    }
+
+    def __init__(self, 
+                train_dataset: torch.utils.data.Dataset,
+                val_dataset: torch.utils.data.Dataset,
+                model: torch.nn.Module,
+                task,
+                train_params=DEFAULT_TRAIN_PARAMS,
+                wandb=None,
+                verbose=False,
+                device=torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
+        ):
+        self.train_params = train_params
+        self.dataset_train = train_dataset
+        self.dataset_val = val_dataset
+        self.model = model
+        self.device = device
+        self.verbose = verbose
+        self.wandb = wandb
+        
+        train_params_final = self.DEFAULT_TRAIN_PARAMS.copy()
+        train_params_final.update(train_params)
+        print('Training parameters', train_params_final)
+
+        for name, value in train_params_final.items():
+            setattr(self, name, value)
+    
+        # initialize task instance using task name and task_params
+        self.task = task
+        self.optimizer = torch.optim.Adam(list(model.parameters()))
+
+    def train(self):
         print('Training on ', self.device)
-        self.train_params.update(train_params)
         num_epochs = self.train_params['num_epochs']
         batch_size = self.train_params['batch_size']
         print_every = self.train_params['print_every']
 
-        optimizer  = torch.optim.Adam(list(model.parameters()) + list(self.gru.parameters()) + list(self.linear_gAR.parameters()) + list(self.linear_fk.parameters()))
         dataloader_train = DataLoader(self.dataset_train, batch_size = batch_size, shuffle = True)
         model.to(device=self.device)
         model.train()
         for e in range(num_epochs):
             for t, (samples, _) in enumerate(dataloader_train):
                 samples = samples.to(device=self.device, dtype=torch.float32)
-                ct, future_embeddings, negative_embeddings = self.forward(model, samples, optimizer)
-                loss = self.loss(ct, future_embeddings, negative_embeddings)
-                optimizer.zero_grad()
+                outputs = task.forward(model, samples, self.optimizer)
+                loss = task.loss(outputs)
+                self.optimizer.zero_grad()
                 loss.backward()
-                optimizer.step()
+                self.optimizer.step()
 
                 if t % print_every == 0:
                     # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
@@ -659,10 +610,9 @@ class CPC():
 
                 metrics = {"train/train_loss": loss.item()}
 
+                for i in range(len(outputs)):
+                  del outputs[0]
                 del samples
-                del ct
-                del future_embeddings
-                del negative_embeddings
                 del loss
 
             eval_train_score, eval_test_score = self.finetune_eval_score(model)
@@ -671,24 +621,26 @@ class CPC():
         model.eval()
         generator = torch.Generator().manual_seed(42)
         val_train, val_test = random_split(self.dataset_val, [0.7, 0.3], generator=generator)
-        val_train_dataloader = DataLoader(val_train, batch_size = len(val_train), shuffle = True)
-        val_test_dataloader = DataLoader(val_test, batch_size = len(val_test), shuffle = True)
-
-        samples, labels = next(iter(val_train_dataloader))
-        samples = samples.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples)
-        # print(predictions)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        # print(embeddings)
-        clf = LinearDiscriminantAnalysis()
-        clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        train_score = clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
+        val_train_dataloader = DataLoader(val_train, batch_size = 4, shuffle = True)
+        val_test_dataloader = DataLoader(val_test, batch_size = 4, shuffle = True)
+        
+        train_score = 0
+        for samples, labels in val_train_dataloader:
+            samples = samples.to(device=self.device, dtype=torch.float32)
+            predictions = F.normalize(model(samples))
+            # print(predictions)
+            embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
+            # print(embeddings)
+            clf = LinearDiscriminantAnalysis()
+            clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
+            train_score += clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
         print('Eval train score:', train_score)
 
-        samples_test, labels_test = next(iter(val_test_dataloader))
-        samples_test = samples_test.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples_test)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        test_score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
+        test_score = 0
+        for samples_test, labels_test in val_test_dataloader:
+            samples_test = samples_test.to(device=self.device, dtype=torch.float32)
+            predictions = F.normalize(model(samples_test))
+            embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
+            test_score += clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
         print('Eval test score:', test_score)
         return train_score, test_score
