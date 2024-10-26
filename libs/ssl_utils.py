@@ -327,7 +327,7 @@ class RelativePositioningTask(SSLTask):
         loss = torch.log(1 + torch.exp(-labels * linear_combination))
         return loss.mean()
         
-class TemporalShufflingTask():
+class TemporalShufflingTask(SSLTask):
     def __init__(self,
                 task_params={
                     'win_length': 30,
@@ -423,7 +423,7 @@ class TemporalShufflingTask():
         loss = torch.log(1 + torch.exp(-labels * linear_combination))
         return loss.mean()
 
-class CPC():
+class CPC(SSLTask):
     def __init__(self,
                 task_params={
                     'win_length': 30,
