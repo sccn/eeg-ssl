@@ -3,10 +3,61 @@ import torchvision.models as torchmodels
 import torch.nn as nn
 import torch.nn.functional as F
 from abc import ABC, abstractmethod
+from torch.nn.parameter import Parameter
 from types import SimpleNamespace
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset, DataLoader, random_split
 import os
+import random
+
+class SpatialAttention(nn.Module):
+    def __init__(self, out_channels=129, K=32):
+        super().__init__()
+        self.outchans = out_channels
+        self.K = K       
+        # trainable parameter:
+        self.z = Parameter(torch.randn(self.outchans, K*K, dtype = torch.cfloat)/(K*K)) # each output channel has its own KxK z matrix
+        self.z.requires_grad = True
+
+    def forward(self, X, positions):
+        '''
+        @param X: BxCxT tensor
+        @param positions: BxCx2 tensor
+        '''
+        def compute_cos_sin(x, y, K):
+            '''
+            Convert 2D x-y coordinates to frequency space backed by K frequencies
+            '''
+            kk = torch.arange(1, K+1)
+            ll = torch.arange(1, K+1)
+            cos_fun = lambda k, l, x, y: torch.cos(2*torch.pi*(k*x + l*y))
+            sin_fun = lambda k, l, x, y: torch.sin(2*torch.pi*(k*x + l*y))
+            return torch.stack([cos_fun(kk[None,:], ll[:,None], x, y) for x, y in zip(x, y)]).reshape(x.shape[0],-1).float(), \
+                   torch.stack([sin_fun(kk[None,:], ll[:,None], x, y) for x, y in zip(x, y)]).reshape(x.shape[0],-1).float()
+            
+        sol = []   
+        for i in len(X):
+            eeg = X[i]
+            x, y = positions[i, :, 0], positions[i, :, 1]
+            cos_mat, sin_mat = compute_cos_sin(x, y, self.K)
+            a = torch.matmul(self.z.real, cos_mat.T) + torch.matmul(self.z.imag, sin_mat.T)
+            index = random.randint(0, len(x)-1)
+            x_drop = x[index]
+            y_drop = y[index]          
+            # Question: divide this with square root of KxK? to stablize gradient as with self-attention?
+            for i in range(a.shape[1]):
+                distance = (x_drop - x)**2 + (y_drop - y)**2
+                if distance < 0.1:
+                    a = torch.cat((a[:, :i], a[:, i+1:]), dim = 1)
+                    eeg = torch.cat((eeg[:i], eeg[i+1:]), dim=0)
+            
+            a = F.softmax(a, dim=1) # softmax over all input chan location for each output chan
+                                                # outchans x  inchans
+                    
+            # X: N x 273 x 360            
+            sol.append(torch.matmul(a, eeg)) # N x outchans x 360 (time)
+                                    # matmul dim expansion logic: https://pytorch.org/docs/stable/generated/torch.matmul.html
+        return torch.stack(sol)
 
 class PosEmb(nn.Module):
   def __init__(self):
@@ -111,13 +162,19 @@ class SSLModel(ABC, nn.Module):
         for k,v in default_params.items():
             setattr(self, k, v)
 
-    @abstractmethod
-    def encode(self, x):
-        pass
+        self.model: nn.Module = None
+        self.projection: nn.Linear = None
 
     @abstractmethod
-    def aggregate(self, x):
-        pass
+    def data_augment(self, x):
+        return x
+
+    @abstractmethod
+    def forward(self, x):
+        x = self.data_augment(x)
+        x = self.model(x)
+        x = self.projection(x)
+        return x
 
 class Wav2VecBrainModel(nn.Module):
     def __init__(self):

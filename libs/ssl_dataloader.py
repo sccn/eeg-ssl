@@ -9,7 +9,7 @@ import torch
 from sklearn import preprocessing
 import csv
 import pandas as pd
-from libs.signalstore_data_utils import SignalstoreHBN
+# from libs.signalstore_data_utils import SignalstoreHBN
 from os import scandir
 import xarray as xr
 import time
@@ -22,6 +22,156 @@ except ImportError:
     import importlib_resources as impresources
 
 verbose = False
+
+class BIDSDataset(torch.utils.data.IterableDataset):
+    ALLOWED_FILE_FORMAT = ['eeglab', 'brainvision']
+    RAW_EXTENSION = {
+        'eeglab': '.set',
+        'brainvision': '.vhdr'
+    }
+    X_PARAMS = {
+        "window": 2,                                          # EEG window length in seconds
+        "sfreq": 128,                                         # desired sampling rate
+        "preprocess": False,                                  # whether preprocess data
+    }
+    def __init__(self,
+            data_dir=None,                            # location of asr cleaned data 
+            raw_format='eeglab',                      # format of raw data
+            metadata={
+                'file': (impresources.files('libs') / 'subjects.csv'),  # path to subject metadata csv file
+                'index_column': 'participant_id',      # index column of the file corresponding to subject name
+                'key': 'gender',                       # which metadata we want to use for finetuning
+            },                 
+            x_params=X_PARAMS,                         # parameters for data preprocessing
+            random_seed=0):                            # numpy random seed
+        super().__init__()
+        torch.manual_seed(random_seed)
+        np.random.seed(random_seed)
+
+        if data_dir is None:
+            raise ValueError('data_dir must be specified')
+        self.bidsdir = Path(data_dir)
+
+        if raw_format.lower() not in self.ALLOWED_FILE_FORMAT:
+            raise ValueError('raw_format must be one of {}'.format(self.ALLOWED_FILE_FORMAT))
+        self.raw_format = raw_format.lower()
+
+        # get all .set files in the bids directory
+        temp_dir = (Path().resolve() / 'data')
+        if not os.path.exists(temp_dir):
+            os.mkdir(temp_dir)
+        if not os.path.exists(temp_dir / 'files.npy'):
+            self.files = self.get_files_with_extension_parallel(self.bidsdir, extension=self.RAW_EXTENSION[self.raw_format])
+            np.save(temp_dir / 'files.npy', self.files)
+        else:
+            self.files = np.load(temp_dir / 'files.npy', allow_pickle=True)
+
+        self.M = x_params['sfreq'] * x_params['window']
+        self.preprocess = False
+
+        for name, value in x_params.items():
+            setattr(self, name, value)
+
+        self.sfreq = x_params['sfreq']
+
+        self._shuffle # in place shuffling
+
+    def _shuffle(self):
+        print('Shuffling data')
+        shuffling_indices = list(range(len(self.files)))
+        np.random.shuffle(shuffling_indices)
+        self.files = self.files[shuffling_indices]
+        # self.metadata_info = metadata
+        # self.metadata = self.get_metadata()
+
+    def scan_directory(self, directory, extension):
+        result_files = []
+        directory_to_ignore = ['.git']
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.name.endswith(extension):
+                    print('Adding ', entry.path)
+                    result_files.append(entry.path)
+                elif entry.is_dir():
+                    # check that entry path doesn't contain any name in ignore list
+                    if not any(name in entry.name for name in directory_to_ignore):
+                        result_files.append(entry.path)  # Add directory to scan later
+        return result_files
+
+    def get_files_with_extension_parallel(self, directory, extension='.set', max_workers=-1):
+        result_files = []
+        dirs_to_scan = [directory]
+
+        # Use joblib.Parallel and delayed to parallelize directory scanning
+        while dirs_to_scan:
+            print(f"Scanning {len(dirs_to_scan)} directories...", dirs_to_scan)
+            # Run the scan_directory function in parallel across directories
+            results = Parallel(n_jobs=max_workers, prefer="threads", verbose=1)(
+                delayed(self.scan_directory)(d, extension) for d in dirs_to_scan
+            )
+            
+            # Reset the directories to scan and process the results
+            dirs_to_scan = []
+            for res in results:
+                for path in res:
+                    if os.path.isdir(path):
+                        dirs_to_scan.append(path)  # Queue up subdirectories to scan
+                    else:
+                        result_files.append(path)  # Add files to the final result
+            print(f"Current number of files: {len(result_files)}")
+
+        return result_files
+
+    def __iter__(self):
+        # set up multi-processing
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:  # single-process data loading, return the full iterator
+            iter_start = 0
+            iter_end = len(self.files)
+        else:  # in a worker process
+            # split workload
+            per_worker = int(math.ceil(len(self.files) / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = min(iter_start + per_worker, len(self.files))
+            print(f'worker_id: {worker_id}, iter_start: {iter_start}, iter_end: {iter_end}\n')
+        for i in range(iter_start, iter_end):
+            raw_file = self.files[i]
+            if os.path.exists(raw_file):
+                # load data
+                data = self.load_and_preprocess_raw(raw_file)
+                max_length   = data.shape[-1]
+
+                # sample windows, rotating through the subjects
+                # to ensure equal contribution among subject per batch
+                indices  = np.arange(0, max_length-self.M, self.M)
+                for idx in indices:
+                    if idx < data.shape[-1]-self.M:
+                        yield data[:,idx:idx+self.M] #, self.subjects[i+s]
+
+    def load_and_preprocess_raw(self, raw_file):
+        EEG = mne.io.read_raw_eeglab(raw_file, preload=True, verbose='error')
+        
+        if self.preprocess:
+            # highpass filter
+            EEG = EEG.filter(l_freq=0.25, h_freq=25, verbose=False)
+            # remove 60Hz line noise
+            EEG = EEG.notch_filter(freqs=(60), verbose=False)
+            # bring to common sampling rate
+
+        if EEG.info['sfreq'] != self.sfreq:
+            EEG = EEG.resample(self.sfreq)
+
+        mat_data = EEG.get_data()
+        mat_data = mat_data[0:128, :] # remove Cz reference chan
+
+        # normalize data to zero mean and unit variance
+        scalar = preprocessing.StandardScaler()
+        mat_data = scalar.fit_transform(mat_data.T).T # scalar normalize for each feature and expects shape data x features
+
+        if len(mat_data.shape) > 2:
+            raise ValueError('Expect raw data to be CxT dimension')
+        return mat_data
     
 class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
     def __init__(self,

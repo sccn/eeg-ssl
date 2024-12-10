@@ -43,8 +43,8 @@ if __name__ == '__main__':
     )
     config['dataset'] = 'ds004186'
 
-    model = Wav2VecBrainModel()
-    config['model'] = 'Wav2VecBrainModel'
+    model = VGGSSL()
+    config['model'] = 'VGGSSL'
     wandb.init(
         # Set the project where this run will be logged
         project="ssl-hbn-rest", 

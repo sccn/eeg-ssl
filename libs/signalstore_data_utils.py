@@ -1,10 +1,12 @@
+import sys
 from pathlib import Path
+sys.path.insert(0,'../')
 import scipy.io as sio
 import numpy as np
 import xarray as xr
 import os
 from os import scandir, walk
-from libs.signalstore import UnitOfWorkProvider
+from .signalstore import UnitOfWorkProvider
 # from mongomock import MongoClient
 from pymongo.mongo_client import MongoClient
 from fsspec.implementations.local import LocalFileSystem

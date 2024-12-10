@@ -1,6 +1,10 @@
 libs/__pycache__/
+libs/data/
 wandb/
 notebooks/wandb/
 __pycache__/
 signalstore/
 aws/
+notebooks/test/
+notebooks/data/
+data/
