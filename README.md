@@ -6,6 +6,9 @@ Apply Self-supervised Learning on NEMAR data
 https://www.youtube.com/watch?v=gm3a7T2bmnc
 
 # Papers
+Y. Benchetrit, H. Banville, and J.-R. King, “Brain decoding: toward real-time reconstruction of visual perception,” Mar. 14, 2024, arXiv: arXiv:2310.19812. doi: 10.48550/arXiv.2310.19812.
+
+A. Thual et al., “Aligning brain functions boosts the decoding of visual semantics in novel subjects,” Dec. 11, 2023, arXiv: arXiv:2312.06467. doi: 10.48550/arXiv.2312.06467.
 
 Banville, Hubert & Chehab, Omar & Hyvarinen, Aapo & Engemann, Denis-Alexander & Gramfort, Alexandre. (2020). Uncovering the structure of clinical EEG signals with self-supervised learning. Journal of Neural Engineering. 18. 10.1088/1741-2552/abca18. 
 https://www.researchgate.net/publication/346857471_Uncovering_the_structure_of_clinical_EEG_signals_with_self-supervised_learning
