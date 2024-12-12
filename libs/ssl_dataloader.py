@@ -1,56 +1,86 @@
 import os
-import sys 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# import sys 
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import warnings
+import json
+from typing import Any
 from joblib import Parallel, delayed
 import numpy as np
 import mne
 import torch
 from sklearn import preprocessing
-import csv
 import pandas as pd
-# from libs.signalstore_data_utils import SignalstoreHBN
-from os import scandir
-import xarray as xr
-import time
 from pathlib import Path
 import math
-try:
-    from importlib import resources as impresources
-except ImportError:
-    # Try backported to PY<37 `importlib_resources`.
-    import importlib_resources as impresources
+from braindecode.datasets import BaseDataset, BaseConcatDataset
+import re
 
-verbose = False
+class HBNDataset(BaseConcatDataset):
+    """A class for Health Brain Network datasets.
 
-class BIDSDataset(torch.utils.data.IterableDataset):
-    ALLOWED_FILE_FORMAT = ['eeglab', 'brainvision']
+    Parameters
+    ----------
+    dataset_name: str
+        name of dataset included in eegdash to be fetched
+    subject_ids: list(int) | int | None
+        (list of) int of subject(s) to be fetched. If None, data of all
+        subjects is fetched.
+    dataset_kwargs: dict, optional
+        optional dictionary containing keyword arguments
+        to pass to the moabb dataset when instantiating it.
+    dataset_load_kwargs: dict, optional
+        optional dictionary containing keyword arguments
+        to pass to the moabb dataset's load_data method.
+        Allows using the moabb cache_config=None and
+        process_pipeline=None.
+    """
+
+    def __init__(
+        self,
+        dataset_name: str,
+        data_path: str = '/mnt/nemar/openneuro',
+        subjects: list[int] | int | None = None,
+        tasks: list[int] | int | None = None,
+        dataset_kwargs: dict[str, Any] | None = None,
+        dataset_load_kwargs: dict[str, Any] | None = None,
+    ):
+        bids_dataset = BIDSDataset(data_dir=f'{data_path}/{dataset_name}', dataset=dataset_name)
+        all_base_ds = []
+        for f in bids_dataset.get_files():
+            if subjects and not any(subject in f for subject in subjects):
+                    continue
+            if tasks and not any(task in f for task in tasks):
+                    continue
+
+            raw = bids_dataset.load_raw(f)
+            metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
+            metadata = {key: getattr(bids_dataset, key)(f) for key in metadata_keys}
+            # electrodes locations in 2D
+            lt = mne.channels.find_layout(raw.info, 'eeg')
+            x, y = lt.pos[:,0], lt.pos[:,1]
+            metadata['electrodes_xy'] = np.array([x, y]).T
+            all_base_ds.append(BaseDataset(raw, metadata))
+        super().__init__(all_base_ds)
+
+
+class BIDSDataset():
+    ALLOWED_FILE_FORMAT = ['eeglab', 'brainvision', 'biosemi', 'european']
     RAW_EXTENSION = {
         'eeglab': '.set',
-        'brainvision': '.vhdr'
+        'brainvision': '.vhdr',
+        'biosemi': '.bdf',
+        'european': '.edf'
     }
-    X_PARAMS = {
-        "window": 2,                                          # EEG window length in seconds
-        "sfreq": 128,                                         # desired sampling rate
-        "preprocess": False,                                  # whether preprocess data
-    }
+    METADATA_FILE_EXTENSIONS = ['eeg.json', 'channels.tsv', 'electrodes.tsv', 'events.tsv', 'events.json']
     def __init__(self,
             data_dir=None,                            # location of asr cleaned data 
+            dataset='',                               # dataset name
             raw_format='eeglab',                      # format of raw data
-            metadata={
-                'file': (impresources.files('libs') / 'subjects.csv'),  # path to subject metadata csv file
-                'index_column': 'participant_id',      # index column of the file corresponding to subject name
-                'key': 'gender',                       # which metadata we want to use for finetuning
-            },                 
-            x_params=X_PARAMS,                         # parameters for data preprocessing
-            random_seed=0):                            # numpy random seed
-        super().__init__()
-        torch.manual_seed(random_seed)
-        np.random.seed(random_seed)
-
-        if data_dir is None:
-            raise ValueError('data_dir must be specified')
+        ):                            
+        if data_dir is None or not os.path.exists(data_dir):
+            raise ValueError('data_dir must be specified and must exist')
         self.bidsdir = Path(data_dir)
+        self.dataset = dataset
 
         if raw_format.lower() not in self.ALLOWED_FILE_FORMAT:
             raise ValueError('raw_format must be one of {}'.format(self.ALLOWED_FILE_FORMAT))
@@ -60,30 +90,75 @@ class BIDSDataset(torch.utils.data.IterableDataset):
         temp_dir = (Path().resolve() / 'data')
         if not os.path.exists(temp_dir):
             os.mkdir(temp_dir)
-        if not os.path.exists(temp_dir / 'files.npy'):
+        if not os.path.exists(temp_dir / f'{dataset}_files.npy'):
             self.files = self.get_files_with_extension_parallel(self.bidsdir, extension=self.RAW_EXTENSION[self.raw_format])
-            np.save(temp_dir / 'files.npy', self.files)
+            np.save(temp_dir / f'{dataset}_files.npy', self.files)
         else:
-            self.files = np.load(temp_dir / 'files.npy', allow_pickle=True)
+            self.files = np.load(temp_dir / f'{dataset}_files.npy', allow_pickle=True)
 
-        self.M = x_params['sfreq'] * x_params['window']
-        self.preprocess = False
+    def get_property_from_filename(self, property, filename):
+        lookup = re.search(rf'{property}-(.*?)[_\/]', filename)
+        return lookup.group(1) if lookup else ''
 
-        for name, value in x_params.items():
-            setattr(self, name, value)
+    def get_bids_file_inheritance(self, path, basename, extension):
+        '''
+        Get all files with given extension that applies to the basename file 
+        following the BIDS inheritance principle in the order of lowest level first
+        @param
+            basename: bids file basename without _eeg.set extension for example
+            extension: e.g. channels.tsv
+        '''
+        top_level_files = ['README', 'dataset_description.json', 'participants.tsv']
+        bids_files = []
 
-        self.sfreq = x_params['sfreq']
+        # check if path is str object
+        if isinstance(path, str):
+            path = Path(path)
+        if not path.exists:
+            raise ValueError('path {path} does not exist')
 
-        self._shuffle # in place shuffling
+        # check if file is in current path
+        for file in os.listdir(path):
+            # target_file = path / f"{cur_file_basename}_{extension}"
+            if os.path.isfile(path/file):
+                cur_file_basename = file[:file.rfind('_')]
+                if file.endswith(extension) and cur_file_basename in basename:
+                    filepath = path / file
+                    bids_files.append(filepath)
 
-    def _shuffle(self):
-        print('Shuffling data')
-        shuffling_indices = list(range(len(self.files)))
-        np.random.shuffle(shuffling_indices)
-        self.files = self.files[shuffling_indices]
-        # self.metadata_info = metadata
-        # self.metadata = self.get_metadata()
+        # check if file is in top level directory
+        if any(file in os.listdir(path) for file in top_level_files):
+            return bids_files
+        else:
+            # call get_bids_file_inheritance recursively with parent directory
+            bids_files.extend(self.get_bids_file_inheritance(path.parent, basename, extension))
+            return bids_files
 
+    def get_bids_metadata_files(self, filepath, metadata_file_extension):
+        """
+        (Wrapper for self.get_bids_file_inheritance)
+        Get all BIDS metadata files that are associated with the given filepath, following the BIDS inheritance principle.
+        
+        Args:
+            filepath (str or Path): The filepath to get the associated metadata files for.
+            metadata_files_extensions (list): A list of file extensions to search for metadata files.
+        
+        Returns:
+            list: A list of filepaths for all the associated metadata files
+        """
+        if isinstance(filepath, str):
+            filepath = Path(filepath)
+        if not filepath.exists:
+            raise ValueError('filepath {filepath} does not exist')
+        path, filename = os.path.split(filepath)
+        basename = filename[:filename.rfind('_')]
+        # metadata files
+        meta_files = self.get_bids_file_inheritance(path, basename, metadata_file_extension)
+        if not meta_files:
+            raise ValueError('No metadata files found for filepath {filepath} and extension {metadata_file_extension}')
+        else:
+            return meta_files
+        
     def scan_directory(self, directory, extension):
         result_files = []
         directory_to_ignore = ['.git']
@@ -122,377 +197,94 @@ class BIDSDataset(torch.utils.data.IterableDataset):
 
         return result_files
 
-    def __iter__(self):
-        # set up multi-processing
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:  # single-process data loading, return the full iterator
-            iter_start = 0
-            iter_end = len(self.files)
-        else:  # in a worker process
-            # split workload
-            per_worker = int(math.ceil(len(self.files) / float(worker_info.num_workers)))
-            worker_id = worker_info.id
-            iter_start = worker_id * per_worker
-            iter_end = min(iter_start + per_worker, len(self.files))
-            print(f'worker_id: {worker_id}, iter_start: {iter_start}, iter_end: {iter_end}\n')
-        for i in range(iter_start, iter_end):
-            raw_file = self.files[i]
-            if os.path.exists(raw_file):
-                # load data
-                data = self.load_and_preprocess_raw(raw_file)
-                max_length   = data.shape[-1]
-
-                # sample windows, rotating through the subjects
-                # to ensure equal contribution among subject per batch
-                indices  = np.arange(0, max_length-self.M, self.M)
-                for idx in indices:
-                    if idx < data.shape[-1]-self.M:
-                        yield data[:,idx:idx+self.M] #, self.subjects[i+s]
-
-    def load_and_preprocess_raw(self, raw_file):
-        EEG = mne.io.read_raw_eeglab(raw_file, preload=True, verbose='error')
-        
-        if self.preprocess:
-            # highpass filter
-            EEG = EEG.filter(l_freq=0.25, h_freq=25, verbose=False)
-            # remove 60Hz line noise
-            EEG = EEG.notch_filter(freqs=(60), verbose=False)
-            # bring to common sampling rate
-
-        if EEG.info['sfreq'] != self.sfreq:
-            EEG = EEG.resample(self.sfreq)
-
-        mat_data = EEG.get_data()
-        mat_data = mat_data[0:128, :] # remove Cz reference chan
-
-        # normalize data to zero mean and unit variance
-        scalar = preprocessing.StandardScaler()
-        mat_data = scalar.fit_transform(mat_data.T).T # scalar normalize for each feature and expects shape data x features
-
-        if len(mat_data.shape) > 2:
-            raise ValueError('Expect raw data to be CxT dimension')
-        return mat_data
+    def load_raw(self, raw_file):
+        print(f"Loading {raw_file}")
+        if raw_file.endswith('.set'):
+            EEG = mne.io.read_raw_eeglab(raw_file, preload=False, verbose='error')
+        else:
+            EEG = mne.io.Raw(raw_file, preload=False, verbose='error')
+        return EEG
     
-class HBNRestBIDSDataset(torch.utils.data.IterableDataset):
-    def __init__(self,
-            data_dir='/mnt/nemar/openneuro/ds004186', # location of asr cleaned data 
-            metadata={
-                'file': (impresources.files('libs') / 'subjects.csv'),  # path to subject metadata csv file
-                'index_column': 'participant_id',      # index column of the file corresponding to subject name
-                'key': 'gender',                       # which metadata we want to use for finetuning
-            },                 
-            x_params={
-                "window": 2,                                          # EEG window length in seconds
-                "sfreq": 128,                                         # desired sampling rate
-                "subject_per_batch": 10,                              # number of subjects per batch
-                "preprocess": False,                                  # whether preprocess data
-            },
-            random_seed=0):                                               # numpy random seed
-        super(HBNRestBIDSDataset).__init__()
-        torch.manual_seed(random_seed)
-        np.random.seed(random_seed)
+    def get_files(self):
+        return self.files
+    
+    def resolve_bids_json(self, json_files: list):
+        """
+        Resolve the BIDS JSON files and return a dictionary of the resolved values.
+        Args:
+            json_files (list): A list of JSON files to resolve in order of leaf level first
 
-        self.bidsdir = Path(data_dir)
-        # get all .set files in the bids directory
-        temp_dir = (Path().resolve() / 'data')
-        if not os.path.exists(temp_dir):
-            os.mkdir(temp_dir)
-        if not os.path.exists(temp_dir / 'files.npy'):
-            self.files = self.get_files_with_extension_parallel(self.bidsdir, extension='.set')
-            np.save(temp_dir / 'files.npy', self.files)
+        Returns:
+            dict: A dictionary of the resolved values.
+        """
+        if len(json_files) == 0:
+            raise ValueError('No JSON files provided')
+        json_files.reverse() # TODO undeterministic
+
+        json_dict = {}
+        for json_file in json_files:
+            with open(json_file) as f:
+                json_dict.update(json.load(f))
+        return json_dict
+
+    def sfreq(self, data_filepath):
+        json_files = self.get_bids_metadata_files(data_filepath, 'eeg.json')
+        if len(json_files) == 0:
+            raise ValueError('No eeg.json found')
+
+        metadata = self.resolve_bids_json(json_files)
+        if 'SamplingFrequency' not in metadata:
+            raise ValueError('SamplingFrequency not found in metadata')
         else:
-            self.files = np.load(temp_dir / 'files.npy', allow_pickle=True)
-
-        self.M = x_params['sfreq'] * x_params['window']
-        self.preprocess = False
-
-        for name, value in x_params.items():
-            setattr(self, name, value)
-
-        self.sfreq = x_params['sfreq']
-
-        self._shuffle # in plac
-
-    def _shuffle(self):
-        # shuffle data
-        shuffling_indices = list(range(len(self.files)))
-        np.random.shuffle(shuffling_indices)
-        self.files = self.files[shuffling_indices]
-        # self.metadata_info = metadata
-        # self.metadata = self.get_metadata()
-
-    def scan_directory(self, directory, extension):
-        result_files = []
-        directory_to_ignore = ['.git']
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                if entry.is_file() and entry.name.endswith(extension):
-                    print('Adding ', entry.path)
-                    result_files.append(entry.path)
-                elif entry.is_dir():
-                    # check that entry path doesn't contain any name in ignore list
-                    if not any(name in entry.name for name in directory_to_ignore):
-                        result_files.append(entry.path)  # Add directory to scan later
-        return result_files
-
-    def get_files_with_extension_parallel(self, directory, extension='.set', max_workers=-1):
-        result_files = []
-        dirs_to_scan = [directory]
-
-        # Use joblib.Parallel and delayed to parallelize directory scanning
-        while dirs_to_scan:
-            print(f"Scanning {len(dirs_to_scan)} directories...", dirs_to_scan)
-            # Run the scan_directory function in parallel across directories
-            results = Parallel(n_jobs=max_workers, prefer="threads", verbose=1)(
-                delayed(self.scan_directory)(d, extension) for d in dirs_to_scan
-            )
-            
-            # Reset the directories to scan and process the results
-            dirs_to_scan = []
-            for res in results:
-                for path in res:
-                    if os.path.isdir(path):
-                        dirs_to_scan.append(path)  # Queue up subdirectories to scan
-                    else:
-                        result_files.append(path)  # Add files to the final result
-            print(f"Current number of files: {len(result_files)}")
-
-        return result_files
-
-    def __iter__(self):
-        # set up multi-processing
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:  # single-process data loading, return the full iterator
-            iter_start = 0
-            iter_end = len(self.files)
-        else:  # in a worker process
-            # split workload
-            per_worker = int(math.ceil(len(self.files) / float(worker_info.num_workers)))
-            worker_id = worker_info.id
-            iter_start = worker_id * per_worker
-            iter_end = min(iter_start + per_worker, len(self.files))
-            print('worker_id', worker_id, 'iter_start', iter_start, 'iter_end', iter_end, '\n')
-        for i in range(iter_start, iter_end):
-            raw_file = self.files[i]
-            if os.path.exists(raw_file):
-                # load data
-                data = self.load_and_preprocess_raw(raw_file)
-                max_length   = data.shape[-1]
-
-                # sample windows, rotating through the subjects
-                # to ensure equal contribution among subject per batch
-                indices  = np.arange(0, max_length-self.M, self.M)
-                for idx in indices:
-                    if idx < data.shape[-1]-self.M:
-                        yield data[:,idx:idx+self.M] #, self.subjects[i+s]
-
-    def load_and_preprocess_raw(self, raw_file):
-        EEG = mne.io.read_raw_eeglab(raw_file, preload=True, verbose='error')
+            return metadata['SamplingFrequency']
+    
+    def electrodes_xy(self, data_filepath, use_bids=False):
+        if use_bids:
+            try:
+                electrodes_files = self.get_bids_metadata_files(data_filepath, 'electrodes.tsv')
+                electrodes = pd.read_csv(electrodes_files[0], sep='\t')
+                # TODO this is totally wrong. Just a placeholder to get the pipeline flow
+                # interpret electrodes location using coordsystem and use correct projection function
+                coordsystem = self.get_bids_metadata_files(data_filepath, 'coordsystem.json')
+                x = np.asarray(electrodes['x'])
+                y = np.asarray(electrodes['y'])
+                z = np.asarray(electrodes['z'])
+                # to create mne info and base raw
+                # https://mne.tools/stable/generated/mne.create_info.html#mne.create_info
+                # https://mne.tools/stable/generated/mne.io.BaseRaw.html#mne.io.BaseRaw
+                from eeg_positions.utils import _stereographic_projection
+                x, y = _stereographic_projection(x,y,z)
+            except ValueError:
+                warnings.warn('No electrodes.tsv found. Attempt to extract electrodes locations from raw file')
+                EEG = self.load_raw(data_filepath)
+                # get 2D electrodes locations from mne Layout
+                # https://mne.tools/stable/auto_tutorials/intro/40_sensor_locations.html
+                lt = mne.channels.find_layout(EEG.info, 'eeg')
+                x, y = lt.pos[:,0], lt.pos[:,1]
+        else:
+            EEG = self.load_raw(data_filepath)
+            EEG = EEG.pick('eeg')
+            print(EEG.info['chs'])
+            # get 2D electrodes locations from mne Layout
+            # https://mne.tools/stable/auto_tutorials/intro/40_sensor_locations.html
+            lt = mne.channels.find_layout(EEG.info)
+            x, y = lt.pos[:,0], lt.pos[:,1]
         
-        if self.preprocess:
-            # highpass filter
-            EEG = EEG.filter(l_freq=0.25, h_freq=25, verbose=False)
-            # remove 60Hz line noise
-            EEG = EEG.notch_filter(freqs=(60), verbose=False)
-            # bring to common sampling rate
+        return x, y
 
-        if EEG.info['sfreq'] != self.sfreq:
-            EEG = EEG.resample(self.sfreq)
-
-        mat_data = EEG.get_data()
-        mat_data = mat_data[0:128, :] # remove Cz reference chan
-
-        # normalize data to zero mean and unit variance
-        scalar = preprocessing.StandardScaler()
-        mat_data = scalar.fit_transform(mat_data.T).T # scalar normalize for each feature and expects shape data x features
-
-        if len(mat_data.shape) > 2:
-            raise ValueError('Expect raw data to be CxT dimension')
-        return mat_data
-
-
-class HBNRestDataset(torch.utils.data.IterableDataset):
-    def __init__(self,
-            data_dir='/mnt/nemar/child-mind-rest', # location of asr cleaned data 
-            metadata={
-                'file': (impresources.files('libs') / 'subjects.csv'),  # path to subject metadata csv file
-                'index_column': 'participant_id',      # index column of the file corresponding to subject name
-                'key': 'gender',                       # which metadata we want to use for finetuning
-            },                 
-            subjects:list=None,                                       # subjects to use, default to all
-            n_subjects=None,                                          # number of subjects to pick, default all
-            x_params={
-                "window": 2,                                          # EEG window length in seconds
-                "sfreq": 128,                                         # sampling rate
-                "subject_per_batch": 10,                              # number of subjects per batch
-            },
-            is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
-            random_seed=None):                                               # numpy random seed
-        super(HBNRestDataset).__init__()
-        np.random.seed(random_seed)
-        self.basedir = data_dir
-        self.files = np.array([i for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
-        self.subjects = np.array([i.split('_')[0] for i in os.listdir(self.basedir) if i.split('.')[-1] == 'set'])
-        self.M = x_params['sfreq'] * x_params['window']
-        self.subject_per_batch = x_params['subject_per_batch']
-
-        if subjects != None:
-            subjects = [i for i in subjects if i in self.subjects]
-            selected_indices = [subjects.index(i) for i in subjects if i in self.subjects]
-            self.subjects = np.array(subjects)[selected_indices]
-            self.files = self.files[selected_indices]
-            if len(subjects) - len(self.subjects) > 0:
-                print("Warning: unknown keys present in user specified subjects")
-        shuffling_indices = list(range(len(self.subjects)))
-        np.random.shuffle(shuffling_indices)
-        self.metadata_info = metadata
-        self.metadata = self.get_metadata()
-        self.subjects = self.subjects[shuffling_indices]
-        self.files = self.files[shuffling_indices]
-
-        n_subjects = n_subjects if n_subjects is not None else len(self.subjects)
-        if n_subjects > len(self.subjects):
-            print("Warning: n_subjects cannot be larger than subjects")
-        self.subjects = self.subjects[:n_subjects]
-        self.files = self.files[:n_subjects]
-
-
-        # Split Train-Test TODO
-        # self.is_test = is_test
-        # if self.n_cv is not None:
-        #     split_size = int(n_subjects / self.n_cv[1])
-        #     if not self.is_test:
-        #         self.subjects = self.subjects[:self.n_cv[0]*split_size] + \
-        #                         self.subjects[(self.n_cv[0]+1)*split_size:]
-        #     else:
-        #         self.subjects = self.subjects[self.n_cv[0]*split_size:(self.n_cv[0]+1)*split_size]
-
-    def __iter__(self):
-        # set up multi-processing
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:  # single-process data loading, return the full iterator
-            iter_start = 0
-            iter_end = len(self.files)
-        else:  # in a worker process
-            # split workload
-            per_worker = int(math.ceil(len(self.files) / float(worker_info.num_workers)))
-            worker_id = worker_info.id
-            iter_start = worker_id * per_worker
-            iter_end = min(iter_start + per_worker, len(self.files))
-
-        for i in range(iter_start, iter_end, self.subject_per_batch):
-            # load data
-            subject_data = [self.preload_raw(self.files[i+s]) for s in range(self.subject_per_batch)]
-            max_length   = max([data.shape[-1] for data in subject_data])
-
-            # sample windows, rotating through the subjects
-            # to ensure equal contribution among subject per batch
-            indices  = np.arange(0, max_length-self.M, self.M)
-            for idx in indices:
-                for s in range(self.subject_per_batch):
-                    data = subject_data[s]
-                    if idx < data.shape[-1]-self.M:
-                        yield data[:,idx:idx+self.M] #, self.subjects[i+s]
-
-
-    '''
-    Extract metadata of samples
-    '''
-    def get_metadata(self):
-        key = self.metadata_info['key']
-        with open(self.metadata_info['file'], 'rb') as f:  # or "rt" as text file with universal newlines
-            subj_info = pd.read_csv(f, index_col=self.metadata_info['index_column']) # master sheet containing all subjects
-        # subj_info = pd.read_csv(self.metadata_info['filepath'], index_col=self.metadata_info['index_column']) # master sheet containing all subjects
-        if key not in subj_info:
-            print('Metadata key not found')
-            return 
-        else:
-            metadata = [subj_info[key][subj] for subj in self.subjects]
-            return metadata
-
-    def preload_raw(self, raw_file):
-        EEG = mne.io.read_raw_eeglab(os.path.join(self.basedir, raw_file), preload=True, verbose='error')
-        mat_data = EEG.get_data()
-
-        if len(mat_data.shape) > 2:
-            raise ValueError('Expect raw data to be CxT dimension')
-        return mat_data
-
-
-class HBNSignalstoreDataset(torch.utils.data.IterableDataset):
-    def __init__(self,
-            metadata={
-                'filepath': '/home/dung/subjects.csv', # path to subject metadata csv file
-                'index_column': 'participant_id',      # index column of the file corresponding to subject name
-                'key': 'gender',                       # which metadata we want to use for finetuning
-            },                 
-            dataset_name='healthy-brain-network',      # signalstore dataset name
-            subjects:list=[],                                       # subjects to use, default to all
-            n_subjects=-1,                                          # number of subjects to pick, default all
-            task_params={
-                "window": 2,                                          # EEG window length in seconds
-                "sfreq": 128,                                         # sampling rate
-                "task": "EC",                                         # list of task name(s)
-            },
-            dbconnectionstring:str='',
-            is_test=False,                                            # use (folds-1 or 1 fold) if n_cv != None
-            random_seed=9):                                               # numpy random seed
-        self.seed = random_seed
-        np.random.seed(random_seed)
-        torch.manual_seed(random_seed)
-        self.signalstore = SignalstoreHBN(dataset_name, dbconnectionstring=dbconnectionstring)
-        self.metadata_info= metadata
-        self.nsubjects = n_subjects
-        self.task_params = task_params
-        self.M = task_params['sfreq'] * task_params['window']
+    def task(self, data_filepath):
+        return self.get_property_from_filename('task', data_filepath)
         
-        query = {'task': self.task_params['task']} # query = {'task': {'$in': self.task_params['task']}} 
-        self.records = self.signalstore.query_data(query)
+    def session(self, data_filepath):
+        return self.get_property_from_filename('session', data_filepath)
 
+    def run(self, data_filepath):
+        return self.get_property_from_filename('run', data_filepath)
 
-    def __iter__(self):
-        # set up multi-processing
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:  # single-process data loading, return the full iterator
-            iter_start = 0
-            iter_end = len(self.records)
-        else:  # in a worker process
-            # split workload
-            per_worker = int(math.ceil(len(self.records) / float(worker_info.num_workers)))
-            worker_id = worker_info.id
-            iter_start = worker_id * per_worker
-            iter_end = min(iter_start + per_worker, len(self.records))
-
-        for i in range(iter_start, iter_end):
-            record = self.records[i]
-            data = self.signalstore.query_data({'schema_ref': record['schema_ref'], 'data_name': record['data_name']}, get_data=True)[0]
-
-            # sample windows, rotating through the subjects
-            # to ensure equal contribution among subject per batch
-            indices  = np.arange(0, data.shape[-1]-self.M, self.M)
-            for idx in indices:
-                yield data[:,idx:idx+self.M].to_numpy() #, self.subjects[i+s]
-
-
-    def get_metadata(self, key):
-        '''
-        Extract metadata of samples
-        '''
-        subj_info = pd.read_csv(self.metadata_info['filepath'], index_col=self.metadata_info['index_column']) # master sheet containing all subjects
-        if key not in subj_info:
-            print('Metadata key not found')
-            return 
-        else:
-            metadata = [subj_info[key][subj] for subj in self.subjects]
-            return metadata
-
-
+    def subject(self, data_filepath):
+        return self.get_property_from_filename('sub', data_filepath)
+    
 if __name__ == "__main__":
-    dataset = HBNRestBIDSDataset(
-        data_dir = "/mnt/nemar/openneuro/ds004186", # ds004186 ds005510
-        x_params = {
-            'sfreq': 128,
-            'window': 20,
-            'preprocess': False,
-        },
+    dataset = HBNDataset(
+        dataset_name = "ds004186", # ds004186 ds005510
     )

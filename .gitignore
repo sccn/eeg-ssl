@@ -8,3 +8,4 @@ aws/
 notebooks/test/
 notebooks/data/
 data/
+.env
