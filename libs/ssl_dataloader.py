@@ -41,10 +41,31 @@ class HBNDataset(BaseConcatDataset):
         data_path: str = '/mnt/nemar/openneuro',
         subjects: list[int] | int | None = None,
         tasks: list[int] | int | None = None,
+        preload: bool = False,
         dataset_kwargs: dict[str, Any] | None = None,
         dataset_load_kwargs: dict[str, Any] | None = None,
     ):
         bids_dataset = BIDSDataset(data_dir=f'{data_path}/{dataset_name}', dataset=dataset_name)
+        # def parseBIDSfile(f, subjects, tasks):
+        #     if subjects and not any(subject in f for subject in subjects):
+        #         return []
+        #     if tasks and not any(task in f for task in tasks):
+        #         return []
+        #     raw = mne.io.read_raw_eeglab(f, preload=preload)
+        #     metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
+        #     metadata = {key: getattr(bids_dataset, key)(f) for key in metadata_keys}
+        #     # electrodes locations in 2D
+        #     lt = mne.channels.find_layout(raw.info, 'eeg')
+        #     x, y = lt.pos[:,0], lt.pos[:,1]
+        #     metadata['electrodes_xy'] = np.array([x, y]).T
+        #     return BaseDataset(raw, metadata)
+
+        # n_jobs = 8
+        # print('num jobs', n_jobs)
+        # all_base_ds = Parallel(n_jobs=n_jobs)(
+        #         delayed(parseBIDSfile)(f, subjects, tasks) for f in bids_dataset.get_files()
+        # )
+        # print('all_base_ds', all_base_ds)
         all_base_ds = []
         for f in bids_dataset.get_files():
             if subjects and not any(subject in f for subject in subjects):
@@ -52,16 +73,15 @@ class HBNDataset(BaseConcatDataset):
             if tasks and not any(task in f for task in tasks):
                     continue
 
-            raw = bids_dataset.load_raw(f)
+            raw = bids_dataset.load_raw(f, preload=preload)
             metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
             metadata = {key: getattr(bids_dataset, key)(f) for key in metadata_keys}
             # electrodes locations in 2D
-            lt = mne.channels.find_layout(raw.info, 'eeg')
-            x, y = lt.pos[:,0], lt.pos[:,1]
-            metadata['electrodes_xy'] = np.array([x, y]).T
+            # lt = mne.channels.find_layout(raw.info, 'eeg')
+            # x, y = lt.pos[:,0], lt.pos[:,1]
+            # metadata['electrodes_xy'] = np.array([x, y]).T
             all_base_ds.append(BaseDataset(raw, metadata))
         super().__init__(all_base_ds)
-
 
 class BIDSDataset():
     ALLOWED_FILE_FORMAT = ['eeglab', 'brainvision', 'biosemi', 'european']
@@ -197,12 +217,12 @@ class BIDSDataset():
 
         return result_files
 
-    def load_raw(self, raw_file):
+    def load_raw(self, raw_file, preload=False):
         print(f"Loading {raw_file}")
         if raw_file.endswith('.set'):
-            EEG = mne.io.read_raw_eeglab(raw_file, preload=False, verbose='error')
+            EEG = mne.io.read_raw_eeglab(raw_file, preload=preload)
         else:
-            EEG = mne.io.Raw(raw_file, preload=False, verbose='error')
+            EEG = mne.io.Raw(raw_file, preload=preload)
         return EEG
     
     def get_files(self):
