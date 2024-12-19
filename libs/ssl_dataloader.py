@@ -1,21 +1,17 @@
 import os
-# import sys 
-# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import warnings
 import json
 from typing import Any
 from joblib import Parallel, delayed
 import numpy as np
 import mne
-import torch
-from sklearn import preprocessing
 import pandas as pd
 from pathlib import Path
-import math
-from braindecode.datasets import BaseDataset, BaseConcatDataset
+import braindecode
+from braindecode.datasets import BaseDataset
 import re
 
-class HBNDataset(BaseConcatDataset):
+class HBNDataset(braindecode.datasets.BaseConcatDataset):
     """A class for Health Brain Network datasets.
 
     Parameters
@@ -46,42 +42,41 @@ class HBNDataset(BaseConcatDataset):
         dataset_load_kwargs: dict[str, Any] | None = None,
     ):
         bids_dataset = BIDSDataset(data_dir=f'{data_path}/{dataset_name}', dataset=dataset_name)
-        # def parseBIDSfile(f, subjects, tasks):
-        #     if subjects and not any(subject in f for subject in subjects):
-        #         return []
-        #     if tasks and not any(task in f for task in tasks):
-        #         return []
-        #     raw = mne.io.read_raw_eeglab(f, preload=preload)
-        #     metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
-        #     metadata = {key: getattr(bids_dataset, key)(f) for key in metadata_keys}
-        #     # electrodes locations in 2D
-        #     lt = mne.channels.find_layout(raw.info, 'eeg')
-        #     x, y = lt.pos[:,0], lt.pos[:,1]
-        #     metadata['electrodes_xy'] = np.array([x, y]).T
-        #     return BaseDataset(raw, metadata)
-
-        # n_jobs = 8
-        # print('num jobs', n_jobs)
-        # all_base_ds = Parallel(n_jobs=n_jobs)(
-        #         delayed(parseBIDSfile)(f, subjects, tasks) for f in bids_dataset.get_files()
-        # )
-        # print('all_base_ds', all_base_ds)
-        all_base_ds = []
-        for f in bids_dataset.get_files():
+        def parseBIDSfile(f, subjects, tasks):
             if subjects and not any(subject in f for subject in subjects):
-                    continue
+                return []
             if tasks and not any(task in f for task in tasks):
-                    continue
-
-            raw = bids_dataset.load_raw(f, preload=preload)
+                return []
+            raw = mne.io.read_raw_eeglab(f, preload=preload)
             metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
             metadata = {key: getattr(bids_dataset, key)(f) for key in metadata_keys}
-            # electrodes locations in 2D
+            # # electrodes locations in 2D
             # lt = mne.channels.find_layout(raw.info, 'eeg')
             # x, y = lt.pos[:,0], lt.pos[:,1]
             # metadata['electrodes_xy'] = np.array([x, y]).T
-            all_base_ds.append(BaseDataset(raw, metadata))
+            return BaseDataset(raw, metadata)
+
+        # parallel vs serial execution
+        n_jobs = 0
+        if n_jobs > 0:
+            print('num jobs', n_jobs)
+            all_base_ds = Parallel(n_jobs=n_jobs)(
+                    delayed(parseBIDSfile)(f, subjects, tasks) for f in bids_dataset.get_files()
+            )
+        else:
+            all_base_ds = []
+            for f in bids_dataset.get_files():
+                base_ds = parseBIDSfile(f, subjects, tasks)
+                all_base_ds.append(base_ds)
         super().__init__(all_base_ds)
+    
+    def load_data(self, fname):
+        from mne.io.eeglab._eeglab import _check_for_scipy_mat_struct
+        from scipy.io import loadmat
+        eeglab_fields = ['setname','filename','filepath','subject','group','condition','session','comments','nbchan','trials','pnts','srate','xmin','xmax','times','icaact','icawinv','icasphere','icaweights','icachansind','chanlocs','urchanlocs','chaninfo','ref','event','urevent','eventdescription','epoch','epochdescription','reject','stats','specdata','specicaact','splinefile','icasplinefile','dipfit','history','saved','etc']
+        eeg = loadmat(fname, squeeze_me=True, mat_dtype=False, variable_names=eeglab_fields)
+        eeg['data'] = fname
+        return _check_for_scipy_mat_struct(eeg)
 
 class BIDSDataset():
     ALLOWED_FILE_FORMAT = ['eeglab', 'brainvision', 'biosemi', 'european']
@@ -93,8 +88,8 @@ class BIDSDataset():
     }
     METADATA_FILE_EXTENSIONS = ['eeg.json', 'channels.tsv', 'electrodes.tsv', 'events.tsv', 'events.json']
     def __init__(self,
-            data_dir=None,                            # location of asr cleaned data 
-            dataset='',                               # dataset name
+            data_dir=None,                            # parent directory of the dataset (i.e. directory path leading up to dataset directory)
+            dataset='',                               # dataset name (e.g. ds005505)
             raw_format='eeglab',                      # format of raw data
         ):                            
         if data_dir is None or not os.path.exists(data_dir):
