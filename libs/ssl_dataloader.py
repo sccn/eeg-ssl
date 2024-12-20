@@ -33,20 +33,16 @@ class HBNDataset(braindecode.datasets.BaseConcatDataset):
 
     def __init__(
         self,
-        dataset_name: str,
-        data_path: str = '/mnt/nemar/openneuro',
-        subjects: list[int] | int | None = None,
+        dataset_name: str,                                  # dataset name (dsnumber in BIDS)
+        data_path: str = '/mnt/nemar/openneuro',            # path to dataset
+        subjects: list[int] | int | None = None,            # subject ids to fetch. Default None fetches all
         tasks: list[int] | int | None = None,
         preload: bool = False,
         dataset_kwargs: dict[str, Any] | None = None,
         dataset_load_kwargs: dict[str, Any] | None = None,
     ):
         bids_dataset = BIDSDataset(data_dir=f'{data_path}/{dataset_name}', dataset=dataset_name)
-        def parseBIDSfile(f, subjects, tasks):
-            if subjects and not any(subject in f for subject in subjects):
-                return []
-            if tasks and not any(task in f for task in tasks):
-                return []
+        def parseBIDSfile(f):
             raw = mne.io.read_raw_eeglab(f, preload=preload)
             metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
             metadata = {key: getattr(bids_dataset, key)(f) for key in metadata_keys}
@@ -56,18 +52,31 @@ class HBNDataset(braindecode.datasets.BaseConcatDataset):
             # metadata['electrodes_xy'] = np.array([x, y]).T
             return BaseDataset(raw, metadata)
 
+        files = bids_dataset.get_files()
+        # filter files
+        if subjects:
+            if type(subjects) == int:
+                all_subjects = bids_dataset.subjects
+                subjects = all_subjects[:subjects]
+                files = [f for f in files if any(subject in f for subject in subjects)]
+            else:
+                files = [f for f in files if any(subject in f for subject in subjects)]
+        if tasks:
+            files = [f for f in files if any(task in f for task in tasks)]
+
         # parallel vs serial execution
-        n_jobs = 0
+        n_jobs = 0 
         if n_jobs > 0:
             print('num jobs', n_jobs)
             all_base_ds = Parallel(n_jobs=n_jobs)(
-                    delayed(parseBIDSfile)(f, subjects, tasks) for f in bids_dataset.get_files()
+                    delayed(parseBIDSfile)(f) for f in files
             )
         else:
             all_base_ds = []
-            for f in bids_dataset.get_files():
-                base_ds = parseBIDSfile(f, subjects, tasks)
-                all_base_ds.append(base_ds)
+            for f in files:
+                base_ds = parseBIDSfile(f)
+                if base_ds:
+                    all_base_ds.append(base_ds)
         super().__init__(all_base_ds)
     
     def load_data(self, fname):
@@ -88,7 +97,7 @@ class BIDSDataset():
     }
     METADATA_FILE_EXTENSIONS = ['eeg.json', 'channels.tsv', 'electrodes.tsv', 'events.tsv', 'events.json']
     def __init__(self,
-            data_dir=None,                            # parent directory of the dataset (i.e. directory path leading up to dataset directory)
+            data_dir=None,                            # dataset directory
             dataset='',                               # dataset name (e.g. ds005505)
             raw_format='eeglab',                      # format of raw data
         ):                            
@@ -110,6 +119,19 @@ class BIDSDataset():
             np.save(temp_dir / f'{dataset}_files.npy', self.files)
         else:
             self.files = np.load(temp_dir / f'{dataset}_files.npy', allow_pickle=True)
+
+    @property
+    def subjects_metadata(self):
+        subject_file = self.bidsdir / 'participants.tsv'
+        if not os.path.exists(subject_file):
+            raise ValueError('participants.tsv file not found in dataset')
+        else:
+            subjects = pd.read_csv(subject_file, sep='\t')
+            return subjects
+    
+    @property
+    def subjects(self):
+        return self.subjects_metadata['participant_id'].values
 
     def get_property_from_filename(self, property, filename):
         lookup = re.search(rf'{property}-(.*?)[_\/]', filename)
