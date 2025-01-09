@@ -165,7 +165,6 @@ class SSLModel(ABC, nn.Module):
         self.model: nn.Module = None
         self.projection: nn.Linear = None
 
-    @abstractmethod
     def data_augment(self, x):
         return x
 
@@ -315,7 +314,7 @@ class VGGSSL(SSLModel):
     def __init__(self, model_params=None):
         super().__init__(model_params)
         vgg = self.create_vgg_rescaled(weights=self.weights)
-        self.encoder = nn.Sequential(vgg.features, vgg.flatten)
+        self.encoder = nn.Sequential(vgg.features, nn.Conv2d(64, 1, 1))#, vgg.flatten)
         
     def create_vgg_rescaled(self, subsample=4, feature='raw', weights='DEFAULT'):
         tmp = torchmodels.vgg16(weights=weights)

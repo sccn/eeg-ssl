@@ -38,25 +38,30 @@ class HBNDataset(braindecode.datasets.BaseConcatDataset):
         subjects: list[int] | int | None = None,            # subject ids to fetch. Default None fetches all
         tasks: list[int] | int | None = None,
         preload: bool = False,
+        num_workers: int = 1,
         dataset_kwargs: dict[str, Any] | None = None,
         dataset_load_kwargs: dict[str, Any] | None = None,
     ):
-        bids_dataset = BIDSDataset(data_dir=f'{data_path}/{dataset_name}', dataset=dataset_name)
+        self.bids_dataset = BIDSDataset(data_dir=f'{data_path}/{dataset_name}', dataset=dataset_name)
+        subject_df = self.bids_dataset.subjects_metadata
         def parseBIDSfile(f):
             raw = mne.io.read_raw_eeglab(f, preload=preload)
             metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
-            metadata = {key: getattr(bids_dataset, key)(f) for key in metadata_keys}
+            metadata = {key: getattr(self.bids_dataset, key)(f) for key in metadata_keys}
+            subject = self.bids_dataset.subject(f)
+            subject_metadata_keys = ['age', 'sex', 'ehq_total', 'p_factor', 'attention', 'internalizing', 'externalizing']
+            metadata.update({key: subject_df.loc[subject_df['participant_id'] == f"sub-{subject}"][key].values[0] for key in subject_metadata_keys})
             # # electrodes locations in 2D
             # lt = mne.channels.find_layout(raw.info, 'eeg')
             # x, y = lt.pos[:,0], lt.pos[:,1]
             # metadata['electrodes_xy'] = np.array([x, y]).T
             return BaseDataset(raw, metadata)
 
-        files = bids_dataset.get_files()
+        files = self.bids_dataset.get_files()
         # filter files
         if subjects:
             if type(subjects) == int:
-                all_subjects = bids_dataset.subjects
+                all_subjects = self.bids_dataset.subjects
                 subjects = all_subjects[:subjects]
                 files = [f for f in files if any(subject in f for subject in subjects)]
             else:
@@ -65,18 +70,16 @@ class HBNDataset(braindecode.datasets.BaseConcatDataset):
             files = [f for f in files if any(task in f for task in tasks)]
 
         # parallel vs serial execution
-        n_jobs = 0 
-        if n_jobs > 0:
-            print('num jobs', n_jobs)
-            all_base_ds = Parallel(n_jobs=n_jobs)(
-                    delayed(parseBIDSfile)(f) for f in files
-            )
-        else:
+        if num_workers == 1:
             all_base_ds = []
             for f in files:
                 base_ds = parseBIDSfile(f)
                 if base_ds:
                     all_base_ds.append(base_ds)
+        else:
+            all_base_ds = Parallel(n_jobs=num_workers)(
+                    delayed(parseBIDSfile)(f) for f in files
+            )
         super().__init__(all_base_ds)
     
     def load_data(self, fname):
@@ -301,7 +304,6 @@ class BIDSDataset():
         else:
             EEG = self.load_raw(data_filepath)
             EEG = EEG.pick('eeg')
-            print(EEG.info['chs'])
             # get 2D electrodes locations from mne Layout
             # https://mne.tools/stable/auto_tutorials/intro/40_sensor_locations.html
             lt = mne.channels.find_layout(EEG.info)

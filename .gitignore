@@ -7,5 +7,6 @@ signalstore/
 aws/
 notebooks/test/
 notebooks/data/
+notebooks/lightning_logs/
 data/
 .env
