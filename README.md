@@ -16,6 +16,14 @@ https://www.researchgate.net/publication/346857471_Uncovering_the_structure_of_c
 Hubert Banville, Isabela Albuquerque, Aapo Hyvärinen, Graeme Moffat, Denis-Alexander Engemann, et al.. Self-supervised representation learning from electroencephalography signals. MLSP 2019 - IEEE 29th International Workshop on Machine Learning for Signal Processing, Oct 2019, Pittsburgh, United States. ⟨hal-02361350⟩
 https://hal.science/hal-02361350
 
+## Installation
+- Install PyTorch for your respective system: https://pytorch.org/get-started/locally/
+- Install braindecode: `pip install braindecode`
+
+To run model training, also install:
+- Install tensorboard: `pip install tensorboard`
+- Install torch lightning: `pip install lightning`
+
 ## Run experiment using Docker
 On a machine with Nvidia GPU:
 
