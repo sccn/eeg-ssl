@@ -2,6 +2,7 @@
 Apply Self-supervised Learning on NEMAR and EEGDASH data
 
 ## Installation
+- Install our fork of mne-python for latest EEGLAB import behavior: `pip install git+https://github.com/dungscout96/mne-python.git`
 - Install PyTorch for your respective system: https://pytorch.org/get-started/locally/
 - Install braindecode: `pip install braindecode`
 
