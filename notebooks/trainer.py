@@ -16,7 +16,65 @@ from torch.utils.data import DataLoader
 
 random_state = 87
 window_len_s = 10
-windows_ds = load_concat_dataset(path='data/hbn_preprocessed_windowed_scaled', preload=False)
+
+if not os.path.exists('data/hbn_preprocessed_windowed_scaled'):
+    datasets = []
+    releases = list(range(9,0,-1))
+    hbn_datasets = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
+    hbn_release_ds = dict(zip(releases,hbn_datasets))
+
+    if not os.path.exists('data'):
+        os.makedirs('data', exist_ok=True)
+    if not os.path.exists('data/ds005510'):
+        # download zip file from google drive and put it in data folder
+        # https://drive.google.com/file/d/1KWEDoZOqyLojq0hQx8lUNTWSdZ5tBlTc/view?usp=sharing
+        import zipfile
+        with zipfile.ZipFile('data/ds005510.zip', 'r') as zip_ref:
+            zip_ref.extractall('data')
+    # make sure you downloaded ds005505 and placed it in data folder
+    ds2 = HBNDataset(hbn_release_ds[6], tasks=['RestingState'], num_workers=-1, preload=False, data_path='data')
+
+    all_ds = BaseConcatDataset([ds2]) # [ds1, ds2]
+
+    from numpy import multiply
+    from sklearn.preprocessing import scale as standard_scale
+
+    os.makedirs('data/hbn_preprocessed', exist_ok=True)
+
+    sampling_rate = 250 # resample to follow the tutorial sampling rate
+    high_cut_hz = 59
+    # Factor to convert from V to uV
+    factor = 1e6
+    preprocessors = [
+        #Preprocessor(lambda data: multiply(data, factor)),  # Convert from V to uV
+        Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+        Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
+        Preprocessor('resample', sfreq=sampling_rate),
+        Preprocessor('notch_filter', freqs=(60, 120)),
+        Preprocessor(standard_scale, channel_wise=True),
+    ]
+
+    # Transform the data
+    preprocess(all_ds, preprocessors, save_dir='data/hbn_preprocessed', overwrite=True, n_jobs=-1)
+
+    target_name = 'age'
+    for ds in all_ds.datasets:
+        ds.target_name = target_name
+
+    fs = all_ds.datasets[0].raw.info['sfreq']
+    print('sampling rate', fs)
+    window_len_samples = int(fs * window_len_s)
+    window_stride_samples = int(fs * window_len_s) # non-overlapping
+    windows_ds = create_fixed_length_windows(
+        all_ds, start_offset_samples=0, stop_offset_samples=None,
+        window_size_samples=window_len_samples,
+        window_stride_samples=window_stride_samples, drop_last_window=True,
+        preload=False)
+
+    os.makedirs('data/hbn_preprocessed_windowed_scaled', exist_ok=True)
+    windows_ds.save('data/hbn_preprocessed_windowed_scaled', overwrite=True)
+else:
+    windows_ds = load_concat_dataset(path='data/hbn_preprocessed_windowed_scaled', preload=False)
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -176,10 +234,10 @@ if __name__ == '__main__':
 
     model = LitSSL(n_channels, sfreq, input_size_samples, window_len_s, emb_size)
 
-    train_loader = DataLoader(splitted['train'], sampler=train_sampler, batch_size=args.batch_size, num_workers=4)
+    train_loader = DataLoader(splitted['train'], sampler=train_sampler, batch_size=args.batch_size)
     splitted['valid'].return_pair = False
-    val_loader = DataLoader(splitted['valid'], batch_size=args.batch_size, num_workers=4)
+    val_loader = DataLoader(splitted['valid'], batch_size=args.batch_size)
 
     # Use the parsed arguments in your program
-    trainer = L.Trainer(max_epochs=100, accelerator='gpu')
+    trainer = L.Trainer(max_epochs=1, accelerator='cpu')
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader) #, ckpt_path="lightning_logs/version_10/checkpoints/epoch=199-step=20000.ckpt")
