@@ -39,7 +39,7 @@ https://hal.science/hal-02361350
 On a machine with Nvidia GPU:
 
 ```
-docker run -it --runtime=nvidia --gpus all -v /mnt/nemar/child-mind-rest:/mnt/nemar/child-mind-rest -v .:/app dtyoung/eeg-ssl python main.py --nsubjects=30
+docker run -v $(pwd):/app --rm -it --runtime=nvidia --gpus all --entrypoint bash dtyoung/eeg-ssl:linux
 ```
 
 Here the path to the dataset is at `/mnt/nemar/child-mind-rest` and we assume that the command is run in the top-level directory of the cloned version of this repo.
