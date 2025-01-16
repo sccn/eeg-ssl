@@ -137,7 +137,11 @@ class BIDSDataset():
         return self.subjects_metadata['participant_id'].values
 
     def get_property_from_filename(self, property, filename):
-        lookup = re.search(rf'{property}-(.*?)[_\/]', filename)
+        import platform
+        if platform.system() == "Windows":
+            lookup = re.search(rf'{property}-(.*?)[_\\]', filename)
+        else:
+            lookup = re.search(rf'{property}-(.*?)[_\/]', filename)
         return lookup.group(1) if lookup else ''
 
     def get_bids_file_inheritance(self, path, basename, extension):
