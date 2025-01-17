@@ -1,15 +1,17 @@
-import os
 import sys
-sys.path.insert(0,'../')
+sys.path.insert(0, '../')
 from libs.ssl_dataloader import *
 from libs.ssl_model import *
 from libs.ssl_utils import *
 from libs.eeg_utils import *
+from libs.evaluation import train_regressor, RankMe
 from braindecode.preprocessing import (
     preprocess, Preprocessor, create_fixed_length_windows)
 from braindecode.datasets import BaseDataset, BaseConcatDataset, WindowsDataset
-from braindecode.preprocessing.windowers import EEGWindowsDataset
 from braindecode.datautil import load_concat_dataset
+import numpy as np
+from sklearn.model_selection import train_test_split
+from braindecode.datasets import BaseConcatDataset
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
@@ -76,39 +78,11 @@ if not os.path.exists('data/hbn_preprocessed_windowed_scaled'):
 else:
     windows_ds = load_concat_dataset(path='data/hbn_preprocessed_windowed_scaled', preload=False)
 
-import numpy as np
-from sklearn.model_selection import train_test_split
-from braindecode.datasets import BaseConcatDataset
-
 subjects = np.unique(windows_ds.description['subject'])
 subj_train, subj_test = train_test_split(
     subjects, test_size=0.4, random_state=random_state)
 subj_valid, subj_test = train_test_split(
     subj_test, test_size=0.5, random_state=random_state)
-
-class RelativePositioningDataset(BaseConcatDataset):
-    """BaseConcatDataset with __getitem__ that expects 2 indices and a target.
-    """
-
-    def __init__(self, list_of_ds):
-        super().__init__(list_of_ds)
-        self.return_pair = True
-
-    def __getitem__(self, index):
-        if self.return_pair:
-            ind1, ind2, y = index
-            return (super().__getitem__(ind1)[0],
-                    super().__getitem__(ind2)[0]), y
-        else:
-            return super().__getitem__(index)
-
-    @property
-    def return_pair(self):
-        return self._return_pair
-
-    @return_pair.setter
-    def return_pair(self, value):
-        self._return_pair = value
 
 split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
 splitted = dict()
@@ -125,9 +99,9 @@ from braindecode.samplers import RelativePositioningSampler
 
 sfreq = 250
 tau_pos, tau_neg = int(sfreq * 10), int(sfreq * 2 * 10)
-n_examples_train = 250 * len(splitted['train'].datasets)
-n_examples_valid = 250 * len(splitted['valid'].datasets)
-n_examples_test = 250 * len(splitted['test'].datasets)
+n_examples_train = 50 * len(splitted['train'].datasets)
+n_examples_valid = 50 * len(splitted['valid'].datasets)
+n_examples_test = 50 * len(splitted['test'].datasets)
 
 train_sampler = RelativePositioningSampler(
     splitted['train'].get_metadata(), tau_pos=tau_pos, tau_neg=tau_neg,
@@ -158,6 +132,7 @@ class LitSSL(L.LightningModule):
             nn.Dropout(dropout),
             nn.Linear(emb_size, 1)
         )
+        self.rankme = RankMe()
 
     def create_embedding_layer(self, n_channels, sfreq, input_size_samples, window_len_s):
         return ShallowFBCSPNet(
@@ -190,19 +165,20 @@ class LitSSL(L.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        from sklearn import linear_model
-        regr = linear_model.LinearRegression()
         X, Y, _ = batch
-        z = self.embed(X).detach().cpu().numpy()
-        Y = Y.detach().cpu().numpy()
-        isnan = np.isnan(Y)
-        embs = z[~isnan]
-        labels = Y[~isnan]
-        regr.fit(embs, labels)
-        score = regr.score(embs, labels) 
-        self.log('val_score', score)
-        
+        z = self.embed(X)
+        self.rankme.update(z)
 
+        z = z.detach().cpu().numpy()
+        Y = Y.detach().cpu().numpy()
+        from sklearn import linear_model, neural_network
+        regr = linear_model.LinearRegression()
+        regr, linear_score = train_regressor(regr, z, Y)
+        self.log('val_linear_score', linear_score)
+        regr = neural_network.MLPRegressor(max_iter=1000)
+        regr, nn_score = train_regressor(regr, z, Y)
+        self.log('val_nn_score', nn_score)
+        
     def test_step(self, batch, batch_idx):
         # this is the test loop
         X, y = batch
@@ -211,6 +187,10 @@ class LitSSL(L.LightningModule):
         x_hat = self.decoder(z)
         test_loss = F.mse_loss(x_hat, x)
         self.log("test_loss", test_loss)
+
+    def on_validation_epoch_end(self):
+        # log epoch metric
+        self.log('val_rankme', self.rankme.compute())
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=1e-3)
@@ -227,17 +207,20 @@ if __name__ == '__main__':
     parser = ArgumentParser()
 
     # Trainer arguments
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--accelerator", type=str, default='gpu')
+    parser.add_argument("--num_workers", type=int, default=4)
 
     # Parse the user inputs and defaults (returns a argparse.Namespace)
     args = parser.parse_args()
 
     model = LitSSL(n_channels, sfreq, input_size_samples, window_len_s, emb_size)
 
-    train_loader = DataLoader(splitted['train'], sampler=train_sampler, batch_size=args.batch_size)
+    train_loader = DataLoader(splitted['train'], sampler=train_sampler, batch_size=args.batch_size, num_workers=args.num_workers)
     splitted['valid'].return_pair = False
-    val_loader = DataLoader(splitted['valid'], batch_size=args.batch_size)
+    val_loader = DataLoader(splitted['valid'], batch_size=args.batch_size, num_workers=args.num_workers)
 
     # Use the parsed arguments in your program
-    trainer = L.Trainer(max_epochs=1, accelerator='cpu')
+    trainer = L.Trainer(max_epochs=args.epochs, accelerator=args.accelerator)
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader) #, ckpt_path="lightning_logs/version_10/checkpoints/epoch=199-step=20000.ckpt")
