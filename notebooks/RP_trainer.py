@@ -173,8 +173,8 @@ class LitSSL(L.LightningModule):
         z = self.embed(X)
         self.rankme.update(z)
 
-        z = z.detach().cpu().numpy()
-        Y = Y.detach().cpu().numpy()
+        z = z.float().detach().cpu().numpy()
+        Y = Y.float().detach().cpu().numpy()
         from sklearn import linear_model, neural_network
         regr = linear_model.LinearRegression()
         regr, linear_score = train_regressor(regr, z, Y)
