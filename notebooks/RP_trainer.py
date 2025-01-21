@@ -228,5 +228,10 @@ if __name__ == '__main__':
     model = LitSSL(n_channels, train_ds.datasets[0].raw.info['sfreq'], input_size_samples, args.window_len_s, emb_size)
 
     # Use the parsed arguments in your program
-    trainer = L.Trainer(max_epochs=args.epochs, accelerator=args.device)
+    if args.device == 'hpu':
+        from lightning_habana.pytorch.accelerator import HPUAccelerator
+        accelerator = HPUAccelerator()
+        trainer = L.Trainer(max_epochs=args.epochs, accelerator=accelerator, devices='auto', strategy='auto')
+    else:
+        trainer = L.Trainer(max_epochs=args.epochs, accelerator=args.device)
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader) #, ckpt_path="lightning_logs/version_10/checkpoints/epoch=199-step=20000.ckpt")
