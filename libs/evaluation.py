@@ -25,11 +25,11 @@ class RankMe(Metric):
 
     def compute(self) -> torch.Tensor:
         # parse inputs
-        embs = dim_zero_cat(self.embs)
+        embs = dim_zero_cat(self.embs).float()
         if len(embs.shape) > 2:
             raise ValueError('Expect 2D embeddings of shape (N, K)')
         if embs.shape[0] < embs.shape[1]:
-            raise ValueError('Expect N >= K')
+            raise ValueError(f'Expect N >= K but received ({embs.shape})')
         _, S, _ = torch.linalg.svd(embs)
         eps = 1e-7
         p = S/torch.linalg.norm(S, ord=1) + eps
