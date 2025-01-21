@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Pod
+metadata:
+        name: eeg-ssl
+spec:
+        restartPolicy: Never
+        volumes:
+               - name: scratch
+                 emptyDir: {}
+               - name: ceph
+                 hostPath:
+                        path: /home/dtyoung
+                        type: Directory
+        containers:
+                - name: gaudi-container
+                  image: vault.habana.ai/gaudi-docker/1.11.0/ubuntu22.04/habanalabs/pytorch-installer-2.0.1:latest
+                  volumeMounts:
+                         - mountPath: /scratch
+                           name: scratch
+                         - mountPath: /ceph
+                           name: ceph
+                  resources:
+                         limits:
+                                memory: 32G
+                                cpu: 12
+                                habana.ai/gaudi: 1
+                                hugepages-2Mi: 95000Mi
+                         requests:
+                                memory: 32G
+                                cpu: 12
+                                habana.ai/gaudi: 1
+                                hugepages-2Mi: 95000Mi
+                  env:
+                    - name: checkpt
+                      value: "/ceph/datasets/stable_diff/checkpoint_trained_habana"
+                    - name: output
+                      value: "/ceph/results/stable_diffusion/inference_from_trained_habana"
+                  command: ["/bin/sh", "-c"]
+                  args:
+                    - hl-smi;
+                      export REPO_PATH=/ceph/eeg-ssl;
+ 
+                      cd $REPO_PATH;
+                      pip install numpy==1.26.4;
+                      pip install git+https://github.com/dungscout96/mne-python.git;
+                      pip install braindecode;
+                      pip install tensorboard;
+                      pip install lightning==2.5.0;
+                      pip install torchmetrics==1.6.1;
+
+                      cd $REPO_PATH/notebooks;
+
+                      python RP_trainer.py --device 'hpu' --epochs 1;
+
