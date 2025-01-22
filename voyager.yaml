@@ -36,11 +36,6 @@ spec:
                     - name: output
                       value: "/ceph/results/stable_diffusion/inference_from_trained_habana"
                   command: ["/bin/sh", "-c"]
-                  args:
-                    - hl-smi;
-                      export REPO_PATH=/ceph/eeg-ssl;
-                      cd $REPO_PATH;
-                      cd $REPO_PATH/notebooks;
-
-                      python RP_trainer.py --device 'hpu' --epochs 1 --num_workers 0;
-
+                  # Just spin & wait forever
+                  command: [ "/bin/bash", "-c", "--" ]
+                  args: [ "while true; do sleep 30; done;" ]
