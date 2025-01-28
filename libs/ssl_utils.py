@@ -6,6 +6,230 @@ from torch.utils.data import DataLoader, random_split
 import os
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from braindecode.datasets import BaseConcatDataset
+from typing import Optional
+from sklearn.utils import check_random_state
+import torch.distributed as dist
+
+class DistributedRecordingSampler(torch.utils.data.distributed.DistributedSampler):
+    """Base sampler simplifying sampling from recordings.
+
+    Parameters
+    ----------
+    metadata : pd.DataFrame
+        DataFrame with at least one of {subject, session, run} columns for each
+        window in the BaseConcatDataset to sample examples from. Normally
+        obtained with `BaseConcatDataset.get_metadata()`. For instance,
+        `metadata.head()` might look like this:
+
+           i_window_in_trial  i_start_in_trial  i_stop_in_trial  target  subject    session    run
+        0                  0                 0              500      -1        4  session_T  run_0
+        1                  1               500             1000      -1        4  session_T  run_0
+        2                  2              1000             1500      -1        4  session_T  run_0
+        3                  3              1500             2000      -1        4  session_T  run_0
+        4                  4              2000             2500      -1        4  session_T  run_0
+
+    random_state : np.RandomState | int | None
+        Random state.
+    num_replicas (int, optional): Number of processes participating in
+        distributed training. By default, :attr:`world_size` is retrieved from the
+        current distributed group.
+    rank (int, optional): Rank of the current process within :attr:`num_replicas`.
+        By default, :attr:`rank` is retrieved from the current distributed
+        group.
+    shuffle (bool, optional): If ``True`` (default), sampler will shuffle the
+        indices.
+    drop_last (bool, optional): if ``True``, then the sampler will drop the
+        tail of the data to make it evenly divisible across the number of
+        replicas. If ``False``, the sampler will add extra indices to make
+        the data evenly divisible across the replicas. Default: ``False``.
+
+    Attributes
+    ----------
+    info : pd.DataFrame
+        Series with MultiIndex index which contains the subject, session, run
+        and window indices information in an easily accessible structure for
+        quick sampling of windows.
+    n_recordings : int
+        Number of recordings available.
+    """
+    def __init__(
+            self, 
+            metadata, 
+            random_state=None,
+            num_replicas: Optional[int] = None,
+            rank: Optional[int] = None,
+            shuffle: bool = True,
+            drop_last: bool = False
+    ):
+        self.metadata = metadata
+        self.info = self._init_info(metadata)
+        self.rng = check_random_state(random_state)
+        if not dist.is_available():
+            raise RuntimeError("Requires distributed package to be available")
+        rank = dist.get_rank()
+        super().__init__(self.info, num_replicas, rank, shuffle, random_state, drop_last)
+        self._iterator = list(super().__iter__())
+
+    def _init_info(self, metadata, required_keys=None):
+        """Initialize ``info`` DataFrame.
+
+        Parameters
+        ----------
+        required_keys : list(str) | None
+            List of additional columns of the metadata DataFrame that we should
+            groupby when creating ``info``.
+
+        Returns
+        -------
+            See class attributes.
+        """
+        keys = [k for k in ['subject', 'session', 'run']
+                if k in self.metadata.columns]
+        if not keys:
+            raise ValueError(
+                'metadata must contain at least one of the following columns: '
+                'subject, session or run.')
+
+        if required_keys is not None:
+            missing_keys = [
+                k for k in required_keys if k not in self.metadata.columns]
+            if len(missing_keys) > 0:
+                raise ValueError(
+                    f'Columns {missing_keys} were not found in metadata.')
+            keys += required_keys
+
+        metadata = metadata.reset_index().rename(
+            columns={'index': 'window_index'})
+        info = metadata.reset_index().groupby(keys)[
+            ['index', 'i_start_in_trial']].agg(['unique'])
+        info.columns = info.columns.get_level_values(0)
+
+        return info
+
+    def sample_recording(self):
+        """Return a random recording index.
+        """
+        # XXX docstring missing
+        return self.rng.choice(self._iterator)
+
+    def sample_window(self, rec_ind=None):
+        """Return a specific window.
+        """
+        # XXX docstring missing
+        if rec_ind is None:
+            rec_ind = self.sample_recording()
+        win_ind = self.rng.choice(self.info.iloc[rec_ind]['index'])
+        return win_ind, rec_ind
+
+    @property
+    def n_recordings(self):
+        return self.info.shape[0]
+
+class DistributedRelativePositioningSampler(DistributedRecordingSampler):
+    """Sample examples for the relative positioning task from [Banville2020]_.
+
+    Sample examples as tuples of two window indices, with a label indicating
+    whether the windows are close or far, as defined by tau_pos and tau_neg.
+
+    Parameters
+    ----------
+    metadata : pd.DataFrame
+        See RecordingSampler.
+    tau_pos : int
+        Size of the positive context, in samples. A positive pair contains two
+        windows x1 and x2 which are separated by at most `tau_pos` samples.
+    tau_neg : int
+        Size of the negative context, in samples. A negative pair contains two
+        windows x1 and x2 which are separated by at least `tau_neg` samples and
+        at most `tau_max` samples. Ignored if `same_rec_neg` is False.
+    n_examples : int
+        Number of pairs to extract.
+    tau_max : int | None
+        See `tau_neg`.
+    same_rec_neg : bool
+        If True, sample negative pairs from within the same recording. If
+        False, sample negative pairs from two different recordings.
+    random_state : None | np.RandomState | int
+        Random state.
+
+    References
+    ----------
+    .. [Banville2020] Banville, H., Chehab, O., Hyvärinen, A., Engemann, D. A.,
+           & Gramfort, A. (2020). Uncovering the structure of clinical EEG
+           signals with self-supervised learning.
+           arXiv preprint arXiv:2007.16104.
+    """
+    def __init__(self, metadata, tau_pos, tau_neg, n_examples, tau_max=None,
+                 same_rec_neg=True, random_state=None, shuffle=True):
+        super().__init__(metadata, random_state=random_state, shuffle=shuffle)
+
+        self.tau_pos = tau_pos
+        self.tau_neg = tau_neg
+        self.tau_max = np.inf if tau_max is None else tau_max
+        self.n_examples = n_examples
+        self.same_rec_neg = same_rec_neg
+
+        if not same_rec_neg and self.n_recordings < 2:
+            raise ValueError('More than one recording must be available when '
+                             'using across-recording negative sampling.')
+
+    def _sample_pair(self):
+        """Sample a pair of two windows.
+        """
+        # Sample first window
+        win_ind1, rec_ind1 = self.sample_window()
+        ts1 = self.metadata.iloc[win_ind1]['i_start_in_trial']
+        ts = self.info.iloc[rec_ind1]['i_start_in_trial']
+
+        # Decide whether the pair will be positive or negative
+        pair_type = self.rng.binomial(1, 0.5)
+        win_ind2 = None
+        if pair_type == 0:  # Negative example
+            if self.same_rec_neg:
+                mask = (
+                    ((ts <= ts1 - self.tau_neg) & (ts >= ts1 - self.tau_max)) |
+                    ((ts >= ts1 + self.tau_neg) & (ts <= ts1 + self.tau_max))
+                )
+            else:
+                rec_ind2 = rec_ind1
+                while rec_ind2 == rec_ind1:
+                    win_ind2, rec_ind2 = self.sample_window()
+        elif pair_type == 1:  # Positive example
+            mask = (ts >= ts1 - self.tau_pos) & (ts <= ts1 + self.tau_pos)
+
+        if win_ind2 is None:
+            mask[ts == ts1] = False  # same window cannot be sampled twice
+            if sum(mask) == 0:
+                raise NotImplementedError
+            win_ind2 = self.rng.choice(self.info.iloc[rec_ind1]['index'][mask])
+
+        return win_ind1, win_ind2, float(pair_type)
+
+    def presample(self):
+        """Presample examples.
+
+        Once presampled, the examples are the same from one epoch to another.
+        """
+        self.examples = [self._sample_pair() for _ in range(self.n_examples)]
+        return self
+
+    def __iter__(self):
+        """Iterate over pairs.
+
+        Yields
+        ------
+            (int): position of the first window in the dataset.
+            (int): position of the second window in the dataset.
+            (float): 0 for negative pair, 1 for positive pair.
+        """
+        for i in range(self.n_examples):
+            if hasattr(self, 'examples'):
+                yield self.examples[i]
+            else:
+                yield self._sample_pair()
+
+    def __len__(self):
+        return self.n_examples
 
 class RelativePositioningDataset(BaseConcatDataset):
     """BaseConcatDataset with __getitem__ that expects 2 indices and a target.
@@ -258,189 +482,6 @@ class SSLTask(ABC):
     def criterion(self, predictions, labels):
         pass
 
-import time
-class RelativePositioning(SSLTask):
-    DEFAULT_TASK_PARAMS = {
-        'sfreq': 128,
-        'win': 2,
-        'tau_pos': 20,
-        'tau_neg': 30,
-        'n_samples': 1,
-        'seed': 0,
-    }
-    def __init__(self,
-                dataset: torch.utils.data.IterableDataset,
-                model: torch.nn.Module,
-                task_params=DEFAULT_TASK_PARAMS,
-                device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-                verbose=False
-        ):
-        super().__init__(dataset, model)
-
-        self.dataset = dataset
-        self.model = model
-        task_params_final = self.DEFAULT_TASK_PARAMS.copy()
-        task_params_final.update(task_params)
-        # self.loss = nn.CrossEntropyLoss()
-
-        for name, value in task_params_final.items():
-            setattr(self, name, value)
-
-        self.device = device
-        self.verbose=verbose
-
-        # initialize RP-specific layers
-        self._add_layers()
-    
-    def _add_layers(self):
-        D = 200
-        sample = next(self.dataset.__iter__())
-        C, T = sample.shape
-        window_nsample = int(self.sfreq * self.win)
-        with torch.no_grad():
-            fake_input = torch.randn(1, C, window_nsample)
-            embed_dim = torch.flatten(self.model(fake_input)).shape[0]
-            self.flattened_encoder_embed_dim = embed_dim
-        self.linear_ff = nn.Linear(embed_dim, D)
-        self.loss_linear = nn.Linear(D, 2)
-    
-    @property
-    def task_module(self) -> nn.Module:
-        return nn.Sequential(self.linear_ff, self.loss_linear)
-
-    def gRP(self, embeddings):
-        '''
-        @param
-            embeddings - batch x 2 x D
-
-        @return
-            differences - batch x D
-        '''
-        return torch.abs(embeddings[:,0] - embeddings[:,1])
-
-    def get_task_model_params(self):
-        return list(self.linear_ff.parameters()) + list(self.loss_linear.parameters())
-
-    def criterion(self, differences, labels):
-        linear_combination = self.loss_linear(differences)
-
-        # Calculate the loss
-        # loss = torch.log(1 + torch.exp(-labels * linear_combination))
-        # return loss.mean()
-        return F.cross_entropy(linear_combination, labels)
-
-    def forward(self, model, x):
-        '''
-        Relative positioning task:
-            - For each anchor window, sample n_samples positive (before and after tau_pos) and negative windows
-            - Negative context is anywhere in the sample that is more than tan_neg sample away from anchor window
-        @param
-            x: (N x C x T) batched raw input
-        '''
-        self.linear_ff.to(self.device).train()
-        self.loss_linear.to(self.device).train()
-        if self.verbose:
-            print('x shape:', x.shape)
-
-
-        window_nsample = int(self.sfreq * self.win)
-        tau_pos_nsample = self.sfreq * self.tau_pos
-        tau_pos_nsample_half = int(tau_pos_nsample / 2)
-        tau_neg_nsample = self.sfreq * self.tau_neg
-
-        # Pre-allocate the samples tensor
-        # total_samples = self.n_samples * 2 * self.n_samples * x.shape[0]  # Positive and negative samples
-        # samples = torch.empty(total_samples, 2, x.shape[1], window_nsample)
-        # labels = torch.empty(total_samples, 1)
-
-        samples = torch.Tensor()
-        labels = torch.Tensor()
-        # select n_samples anchor window randomly from entire recording
-        # idx = 0
-        for anchor_start in np.random.choice(np.arange(0, x.shape[2]-window_nsample, window_nsample), self.n_samples, replace=False):
-            tau_pos_start = max(anchor_start - tau_pos_nsample_half, 0)
-            tau_pos_end = min(anchor_start + window_nsample + tau_pos_nsample_half, x.shape[2]-window_nsample)
-            tau_pos_winds = np.arange(tau_pos_start, tau_pos_end, window_nsample) 
-            # sample positive samples from the window starting from tau_pos_nsample_half before anchor window to anchor_start+window_nsample+tau_pos_nsample_half
-            if len(tau_pos_winds) > 0:
-                for pos_wind_start in np.random.choice(tau_pos_winds, self.n_samples, replace=False):
-                    # print('pos_wind_start', pos_wind_start)
-                    anch  = x[:, :,anchor_start:anchor_start+window_nsample]
-                    pos_w = x[:, :,pos_wind_start:pos_wind_start+window_nsample]
-
-
-                    if self.verbose:
-                        print('anchor shape:', anch.shape)   
-                        # eeg_utils.plot_raw_eeg(anch[0][:15, :].cpu().numpy(), 128)
-                        print('positive shape:', pos_w.shape)   
-                        # eeg_utils.plot_raw_eeg(pos_w[0].cpu().numpy(), 128)
-
-                    # samples[idx:idx+x.shape[0], 0] = anch
-                    # samples[idx:idx+x.shape[0], 1] = pos_w
-                    # labels[idx:idx+x.shape[0]] = 1
-
-                    # idx += x.shape[0]
-
-                    samples = torch.concat([samples, torch.stack([anch, pos_w], dim=1)]) # N x 2 x C x W
-                    labels = torch.concat([labels, torch.ones(x.shape[0])]) 
-
-            # samples - n_samples*N x 2 x C x W
-
-            tau_neg_before = np.arange(0, anchor_start - tau_neg_nsample - window_nsample, window_nsample)
-            tau_neg_after = np.arange(anchor_start + window_nsample + tau_neg_nsample, x.shape[2]-window_nsample, window_nsample)
-            if len(tau_neg_before) > 0 or len(tau_neg_after) > 0:
-                for neg_wind_start in np.random.choice(np.concatenate([tau_neg_before, tau_neg_after]), self.n_samples, replace=False):
-                    # print('neg_wind_start', neg_wind_start)
-                    anch  = x[:, :,anchor_start:anchor_start+window_nsample]
-                    neg_w = x[:, :,neg_wind_start:neg_wind_start+window_nsample]
-
-                    if self.verbose:
-                        print('anchor shape:', anch.shape)   
-                        # eeg_utils.plot_raw_eeg(anch[0][:15, :].cpu().numpy(), 128)
-                        print('negative shape:', neg_w.shape)   
-                        # eeg_utils.plot_raw_eeg(neg_w[0].cpu().numpy(), 128)
-
-                    # samples[idx:idx+x.shape[0], 0] = anch
-                    # samples[idx:idx+x.shape[0], 1] = neg_w
-                    # labels[idx:idx+x.shape[0]] = 0
-
-                    # idx += x.shape[0]
-                    samples = torch.concat([samples, torch.stack([anch, neg_w], dim=1)]) # N x 2 x C x W
-                    labels = torch.concat([labels, torch.zeros(x.shape[0])])
-            # samples - n_samples*N x 2 x C x W
-
-            # --> samples - 2*n_samples*N x 2 x C x W
-
-        # if idx != total_samples:
-        #     print('idx', idx, 'total_samples', total_samples)
-        #     raise ValueError('Number of samples mismatch')
-
-        if self.verbose:
-            print('sample shape', samples.shape) # n_samples*2*n_samples*N x 2 x C x W
-
-        samples = samples.to(device=self.device, dtype=torch.float32)
-        embeddings = torch.stack([self.linear_ff(torch.flatten(model(samples[:, 0]), start_dim=1)), self.linear_ff(torch.flatten(model(samples[:, 1]), start_dim=1))], dim=1) # batch x 2 x D
-
-        differences = self.gRP(embeddings)
-
-        if len(differences) != len(labels):
-            raise ValueError('Number of samples and labels mismatch')
-        if len(torch.unique(labels)) == 1:
-            print('Warning: All samples are of the same type')
-        if not torch.all(torch.isin(torch.unique(labels), torch.tensor([0, 1]))):
-            raise ValueError('Labels must be 0 or 1')
-
-        labels = labels.to(dtype=torch.long, device=self.device)
-        
-        # shuffle data
-        shuffle_indices = torch.randperm(len(differences))
-        differences = differences[shuffle_indices]
-        labels = labels[shuffle_indices]
-        loss = self.criterion(differences, labels)
-
-        del differences, labels
-
-        return loss
 
 class TemporalShuffling(SSLTask):
     DEFAULT_TASK_PARAMS = {
@@ -559,171 +600,6 @@ class TemporalShuffling(SSLTask):
         loss = torch.log(1 + torch.exp(-labels * linear_combination))
         return loss.mean()
 
-class Trainer():
-    # default training parameters
-    DEFAULT_TRAIN_PARAMS = {
-        'num_epochs': 100,
-        'batch_size': 10,
-        'print_every': 100,
-        'num_workers': 0,
-    }
-
-    def __init__(self, 
-                dataset: torch.utils.data.IterableDataset,
-                model: torch.nn.Module,
-                task_params={},
-                train_params=DEFAULT_TRAIN_PARAMS,
-                wandb=None,
-                verbose=False,
-                device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'), 
-                seed=9,
-        ):
-        self.dataset = dataset
-        self.model = model
-        self.device = device
-        self.verbose = verbose
-        self.wandb = wandb
-
-        self.seed = seed
-        torch.manual_seed(self.seed)
-        torch.cuda.manual_seed(self.seed)
-        torch.cuda.manual_seed_all(self.seed)
-        np.random.seed(self.seed)
-
-        
-        train_params_final = self.DEFAULT_TRAIN_PARAMS.copy()
-        train_params_final.update(train_params)
-        print('Training parameters', train_params_final)
-        print('Task parameters', task_params)
-
-        for name, value in train_params_final.items():
-            setattr(self, name, value)
-    
-        # initialize task instance using task name and task_params
-        self.task = getattr(globals()[task_params['task']], '__call__')(self.dataset, self.model, task_params, device=self.device, verbose=verbose)
-
-        self.optimizer = torch.optim.Adam(list(model.parameters()) + self.task.get_task_model_params())
-
-    def train(self, checkpoint=None):
-        print('Training on ', self.device)
-        task = self.task
-        dataset = self.dataset
-        model = self.model
-        optimizer = self.optimizer
-        num_epochs = self.num_epochs
-        batch_size = self.batch_size
-        print_every = self.print_every
-        num_workers = self.num_workers
-        wandb = self.wandb
-        epoch_start = 0
-
-        if self.verbose:
-            print('Training with parameters:')
-            for name, value in locals().items():
-                print(f'{name}: {value}')
-
-
-        # resume from checkpoint if provided
-        if checkpoint is not None and os.path.exists(checkpoint):
-            checkpoint_dict = torch.load(checkpoint, weights_only=True)
-            print('Resuming from checkpoint ', checkpoint, ' at epoch ', checkpoint_dict['epoch'])
-            model.load_state_dict(checkpoint_dict['model_state_dict'])
-            self.task.task_module.load_state_dict(checkpoint_dict['task_module_state_dict'])
-            optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
-            epoch_start = checkpoint_dict['epoch'] + 1 # assuming checkpoint is saved at the end of each epoch
-
-        # Move the model and optimizer state to the desired device
-        model.to(device=self.device)
-        model.train()
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(self.device)
-
-        if wandb and wandb.run:
-            wandb.watch(model, log='all', log_freq=100)
-
-        for e in range(epoch_start, num_epochs):
-            dataset._shuffle()
-            dataloader_train = DataLoader(dataset, batch_size = batch_size, num_workers=num_workers)
-            for t, samples in enumerate(dataloader_train):
-                # check if samples has nan
-                assert not np.any(np.isnan(samples.numpy()))
-
-                loss = task.forward(model, samples)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                if t % print_every == 0:
-                    # writer.add_scalar("Loss/train", loss.item(), e*len(dataloader)+t)
-                    print('Epoch %d, Iteration %d, loss = %.4f' % (e, t, loss.item()))
-
-                metrics = {"train/train_loss": loss.item()}
-                if wandb and wandb.run is not None:
-                    metrics = {"epoch": e, "iter": t, "train/train_loss": loss.item()}
-                    wandb.log(metrics)
-
-                # save checkpoint
-                if t % 2999 == 0 and wandb and wandb.run is not None:
-                    torch.save({
-                        'epoch': e,
-                        'iteration': t,
-                        'model_state_dict': model.state_dict(),
-                        'task_module_state_dict': self.task.task_module.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': loss,
-                    }, os.path.join(wandb.run.dir, f"checkpoint_epoch-{e}_iteration-{t}"))
-
-                del samples
-
-            if wandb and wandb.run is not None:
-                torch.save({
-                    'epoch': e,
-                    'model_state_dict': model.state_dict(),
-                    'task_module_state_dict': self.task.task_module.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': loss,
-                }, os.path.join(wandb.run.dir, f"checkpoint_epoch-{e}_final"))
-
-        if wandb and wandb.run is not None:
-            torch.save({
-                'epoch': e,
-                'model_state_dict': model.state_dict(),
-                'task_module_state_dict': self.task.task_module.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': loss,
-            }, os.path.join(wandb.run.dir, f"checkpoint_final"))
-            wandb.finish()
-            # eval_train_score, eval_test_score = self.finetune_eval_score(model)
-
-    def finetune_eval_score(self, model):
-        model.eval()
-        generator = torch.Generator().manual_seed(42)
-        val_train, val_test = random_split(self.dataset_val, [0.7, 0.3], generator=generator)
-        val_train_dataloader = DataLoader(val_train, batch_size = len(val_train), shuffle = True)
-        val_test_dataloader = DataLoader(val_test, batch_size = len(val_test), shuffle = True)
-
-        samples, labels = next(iter(val_train_dataloader))
-        samples = samples.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples)
-        # print(predictions)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        # print(embeddings)
-        clf = LinearDiscriminantAnalysis()
-        clf.fit(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        train_score = clf.score(embeddings.detach().cpu().numpy(), labels.detach().cpu().numpy())
-        print('Eval train score:', train_score)
-
-        samples_test, labels_test = next(iter(val_test_dataloader))
-        samples_test = samples_test.to(device=self.device, dtype=torch.float32)
-        predictions = model(samples_test)
-        embeddings = torch.mean(predictions, dim=-1) # TODO is averaging the best strategy here, for classification?
-        test_score = clf.score(embeddings.detach().cpu().numpy(), labels_test.detach().cpu().numpy())
-        print('Eval test score:', test_score)
-        return train_score, test_score
-        
 class CPC():
     def __init__(self,
                 dataset: torch.utils.data.Dataset,
