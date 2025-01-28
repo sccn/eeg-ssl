@@ -3,6 +3,7 @@ sys.path.insert(0, '../')
 from libs.ssl_dataloader import *
 from libs.ssl_model import *
 from libs.ssl_utils import *
+from libs.ssl_utils import DistributedRelativePositioningSampler
 from libs.eeg_utils import *
 from libs.evaluation import train_regressor, RankMe
 from braindecode.preprocessing import (
@@ -19,110 +20,143 @@ import lightning as L
 import torch
 from torch import nn
 from braindecode.models import ShallowFBCSPNet
-from braindecode.samplers import RelativePositioningSampler
+from braindecode.samplers import RelativePositioningSampler 
 
-def load_data(window_len_s, tau_pos_s, tau_neg_s=None, same_rec_neg=False, random_state=9):
-    if not os.path.exists('data/hbn_preprocessed'):
-        releases = list(range(9,0,-1))
-        hbn_datasets = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
-        hbn_release_ds = dict(zip(releases,hbn_datasets))
+class RelativePositioningDataModule(L.LightningDataModule):
+    def __init__(self, window_len_s, tau_pos_s, tau_neg_s=None, same_rec_neg=False, random_state=9, batch_size: int = 32, num_workers=0):
+        super().__init__()
+        self.window_len_s = window_len_s
+        self.tau_pos_s = tau_pos_s
+        self.tau_neg_s = tau_neg_s
+        self.same_rec_neg = same_rec_neg
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.random_state = random_state
 
-        if not os.path.exists('data'):
-            os.makedirs('data', exist_ok=True)
-        if not os.path.exists('data/ds005510'):
-            # download zip file from google drive and put it in data folder
-            # https://drive.google.com/file/d/1KWEDoZOqyLojq0hQx8lUNTWSdZ5tBlTc/view?usp=sharing
-            import zipfile
-            with zipfile.ZipFile('data/ds005510.zip', 'r') as zip_ref:
-                zip_ref.extractall('data')
-        # make sure you downloaded ds005505 and placed it in data folder
-        ds2 = HBNDataset(hbn_release_ds[6], tasks=['RestingState'], num_workers=-1, preload=False, data_path='data')
+    def prepare_data(self):
+        if not os.path.exists('data/hbn_preprocessed'):
+            releases = list(range(9,0,-1))
+            hbn_datasets = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
+            hbn_release_ds = dict(zip(releases,hbn_datasets))
 
-        all_ds = BaseConcatDataset([ds2]) # [ds1, ds2]
+            if not os.path.exists('data'):
+                os.makedirs('data', exist_ok=True)
+            if not os.path.exists('data/ds005510'):
+                # download zip file from google drive and put it in data folder
+                # https://drive.google.com/file/d/1KWEDoZOqyLojq0hQx8lUNTWSdZ5tBlTc/view?usp=sharing
+                import zipfile
+                with zipfile.ZipFile('data/ds005510.zip', 'r') as zip_ref:
+                    zip_ref.extractall('data')
+            # make sure you downloaded ds005505 and placed it in data folder
+            ds2 = HBNDataset(hbn_release_ds[6], tasks=['RestingState'], num_workers=-1, preload=False, data_path='data')
 
-        from sklearn.preprocessing import scale as standard_scale
+            all_ds = BaseConcatDataset([ds2]) # [ds1, ds2]
 
-        os.makedirs('data/hbn_preprocessed', exist_ok=True)
+            from sklearn.preprocessing import scale as standard_scale
 
-        sampling_rate = 250 # resample to follow the tutorial sampling rate
-        high_cut_hz = 59
-        # Factor to convert from V to uV
-        factor = 1e6
-        preprocessors = [
-            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
-            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
-            Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
-            Preprocessor('resample', sfreq=sampling_rate),
-            Preprocessor('notch_filter', freqs=(60, 120)),
-            Preprocessor(standard_scale, channel_wise=True),
-        ]
+            os.makedirs('data/hbn_preprocessed', exist_ok=True)
 
-        # Transform the data
-        preprocess(all_ds, preprocessors, save_dir='data/hbn_preprocessed', overwrite=True, n_jobs=-1)
-    else:
-        all_ds = load_concat_dataset(path='data/hbn_preprocessed', preload=False)
+            sampling_rate = 250 # resample to follow the tutorial sampling rate
+            high_cut_hz = 59
+            # Factor to convert from V to uV
+            factor = 1e6
+            preprocessors = [
+                Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
+                Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+                Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
+                Preprocessor('resample', sfreq=sampling_rate),
+                Preprocessor('notch_filter', freqs=(60, 120)),
+                Preprocessor(standard_scale, channel_wise=True),
+            ]
 
-    target_name = 'age'
-    for ds in all_ds.datasets:
-        ds.target_name = target_name
+            # Transform the data
+            preprocess(all_ds, preprocessors, save_dir='data/hbn_preprocessed', overwrite=True, n_jobs=-1)
+        else:
+            all_ds = load_concat_dataset(path='data/hbn_preprocessed', preload=False)
 
-    fs = all_ds.datasets[0].raw.info['sfreq']
-    print('sampling rate', fs)
-    window_len_samples = int(fs * window_len_s)
-    window_stride_samples = int(fs * window_len_s) # non-overlapping
-    windows_ds = create_fixed_length_windows(
-        all_ds, start_offset_samples=0, stop_offset_samples=None,
-        window_size_samples=window_len_samples,
-        window_stride_samples=window_stride_samples, drop_last_window=True,
-        preload=False)
+        target_name = 'age'
+        for ds in all_ds.datasets:
+            ds.target_name = target_name
 
+        fs = all_ds.datasets[0].raw.info['sfreq']
+        window_len_samples = int(fs * self.window_len_s)
+        window_stride_samples = int(fs * self.window_len_s) # non-overlapping
+        self.windows_ds = create_fixed_length_windows(
+            all_ds, start_offset_samples=0, stop_offset_samples=None,
+            window_size_samples=window_len_samples,
+            window_stride_samples=window_stride_samples, drop_last_window=True,
+            preload=False)
+        
+        self.n_channels, self.n_times = self.windows_ds[0][0].shape
+        self.sfreq = self.windows_ds.datasets[0].raw.info['sfreq']
+        self.tau_pos = int(self.sfreq * self.tau_pos_s)
+        self.tau_neg = int(self.sfreq * self.tau_neg_s) if self.tau_neg_s else int(self.sfreq * 2 * self.tau_pos_s)
 
-    subjects = np.unique(windows_ds.description['subject'])
-    subj_train, subj_test = train_test_split(
-        subjects, test_size=0.4, random_state=random_state)
-    subj_valid, subj_test = train_test_split(
-        subj_test, test_size=0.5, random_state=random_state)
+        subjects = np.unique(self.windows_ds.description['subject'])
+        subj_train, subj_test = train_test_split(
+            subjects, test_size=0.4, random_state=self.random_state)
+        subj_valid, subj_test = train_test_split(
+            subj_test, test_size=0.5, random_state=self.random_state)
 
-    split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
-    splitted = dict()
-    for name, values in split_ids.items():
-        splitted[name] = RelativePositioningDataset(
-            [ds for ds in windows_ds.datasets
-            if ds.description['subject'] in values])
+        self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
+        # splitted = dict()
+        # for name, values in split_ids.items():
+        #     splitted[name] = RelativePositioningDataset(
+        #         [ds for ds in windows_ds.datasets
+        #         if ds.description['subject'] in values])
+        # self.train_ds, self.valid_ds, self.test_ds = splitted['train'], splitted['valid'], splitted['test']
+        # self.valid_ds.return_pair = False
 
-    print('n train datasets:', len(splitted['train'].datasets))
-    print('n validation datasets:', len(splitted['valid'].datasets))
-    print('n test datasets:', len(splitted['test'].datasets))
-
-    def get_min_sample_per_dataset(windows_ds: BaseConcatDataset):
-        subjects = windows_ds.get_metadata()['subject'].values
+        # get minimum number of samples per dataset
+        # subjects = self.windows_ds.get_metadata()['subject'].values
         _, counts = np.unique(subjects, return_counts=True)
-        return np.min(counts)
+        min_sample_per_dataset = np.min(counts)
+        self.n_samples_per_dataset = min_sample_per_dataset # this number is a function of window_len_s and recording length
 
-    n_samples_per_dataset = get_min_sample_per_dataset(windows_ds) # this number is a function of window_len_s and recording length
-    sfreq = windows_ds.datasets[0].raw.info['sfreq']
-    tau_pos, tau_neg = int(sfreq * tau_pos_s), int(sfreq * tau_neg_s) if tau_neg_s else int(sfreq * 2 * tau_pos_s)
-    n_examples_train = n_samples_per_dataset * len(splitted['train'].datasets)
-    n_examples_valid = n_samples_per_dataset * len(splitted['valid'].datasets)
-    n_examples_test = n_samples_per_dataset * len(splitted['test'].datasets)
-    print('n train samples:', n_examples_train)
-    print('n validation samples:', n_examples_valid)
-    print('n test samples:', n_examples_test)
+    def setup(self, stage=None):
+        if stage == 'fit':
+            self.train_ds = RelativePositioningDataset(
+                [ds for ds in self.windows_ds.datasets
+                if ds.description['subject'] in self.split_ids['train']])
+            self.valid_ds = RelativePositioningDataset(
+                [ds for ds in self.windows_ds.datasets
+                if ds.description['subject'] in self.split_ids['valid']])
+            self.valid_ds.return_pair = False
+        elif stage == 'test':
+            self.test_ds = RelativePositioningDataset(
+                [ds for ds in self.windows_ds.datasets
+                if ds.description['subject'] in self.split_ids['test']])
+            self.test_ds.return_pair = False
 
-    train_sampler = RelativePositioningSampler(
-        splitted['train'].get_metadata(), tau_pos=tau_pos, tau_neg=tau_neg,
-        n_examples=n_examples_train, same_rec_neg=same_rec_neg, random_state=random_state)
-    valid_sampler = RelativePositioningSampler(
-        splitted['valid'].get_metadata(), tau_pos=tau_pos, tau_neg=tau_neg,
-        n_examples=n_examples_valid, same_rec_neg=same_rec_neg,
-        random_state=random_state).presample()
-    test_sampler = RelativePositioningSampler(
-        splitted['test'].get_metadata(), tau_pos=tau_pos, tau_neg=tau_neg,
-        n_examples=n_examples_test, same_rec_neg=same_rec_neg,
-        random_state=random_state).presample()
-    
-    return (splitted['train'], train_sampler), (splitted['valid'], valid_sampler), (splitted['test'], test_sampler)
+    def train_dataloader(self):
+        n_examples_train = self.n_samples_per_dataset * len(self.train_ds.datasets)
+        train_sampler = DistributedRelativePositioningSampler(
+            self.train_ds.get_metadata(), tau_pos=self.tau_pos, tau_neg=self.tau_neg,
+            n_examples=n_examples_train, same_rec_neg=self.same_rec_neg, random_state=self.random_state)
+        return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
 
+    def val_dataloader(self):
+        # n_examples_valid = self.n_samples_per_dataset * len(self.valid_ds.datasets)
+        # valid_sampler = DistributedRelativePositioningSampler(
+        #     self.valid_ds.get_metadata(), return_pair=False, tau_pos=self.tau_pos, tau_neg=self.tau_neg,
+        #     n_examples=n_examples_valid, same_rec_neg=self.same_rec_neg,
+        #     random_state=self.random_state, shuffle=False).presample()
+        return DataLoader(self.valid_ds, sampler=torch.utils.data.distributed.DistributedSampler(self.valid_ds), batch_size=self.batch_size, num_workers=self.num_workers)
+
+    def test_dataloader(self):
+        # n_examples_test = self.n_samples_per_dataset * len(self.test_ds.datasets)
+        # test_sampler = DistributedRelativePositioningSampler(
+        #     self.valid_ds.get_metadata(), return_pair=False, tau_pos=self.tau_pos, tau_neg=self.tau_neg,
+        #     n_examples=n_examples_test, same_rec_neg=self.same_rec_neg,
+        #     random_state=self.random_state, shuffle=False).presample()
+        return DataLoader(self.test_ds, sampler=torch.utils.data.distributed.DistributedSampler(self.test_ds), batch_size=self.batch_size, num_workers=self.num_workers)
+
+    def predict_dataloader(self):
+        pass
+
+    def teardown(self, stage: str):
+        # Used to clean-up when the run is finished
+        pass
     
 # define the LightningModule
 class LitSSL(L.LightningModule):
@@ -178,10 +212,10 @@ class LitSSL(L.LightningModule):
         from sklearn import linear_model, neural_network
         regr = linear_model.LinearRegression()
         regr, linear_score = train_regressor(regr, z, Y)
-        self.log('val_linear_score', linear_score)
+        self.log('val_linear_score', linear_score, sync_dist=True)
         regr = neural_network.MLPRegressor(max_iter=1000)
         regr, nn_score = train_regressor(regr, z, Y)
-        self.log('val_nn_score', nn_score)
+        self.log('val_nn_score', nn_score, sync_dist=True)
         
     def test_step(self, batch, batch_idx):
         # this is the test loop
@@ -194,7 +228,7 @@ class LitSSL(L.LightningModule):
 
     def on_validation_epoch_end(self):
         # log epoch metric
-        self.log('val_rankme', self.rankme.compute())
+        self.log('val_rankme', self.rankme.compute(), sync_dist=True)
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=1e-3)
@@ -209,29 +243,32 @@ if __name__ == '__main__':
     parser.add_argument("--window_len_s", type=int, default=10)
     parser.add_argument("--tau_pos_s", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--device", type=str, default='gpu')
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--accelerator", type=str, default='hpu')
+    parser.add_argument("--device", type=str, default='auto')
     parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--debug", type=str, default=None)
 
     # Parse the user inputs and defaults (returns a argparse.Namespace)
     args = parser.parse_args()
+    if not args.device == 'auto':
+        args.device = int(args.device)
 
-    (train_ds, train_sampler), (valid_ds, valid_sampler), (test_ds, test_sampler) = load_data(args.window_len_s, args.tau_pos_s)
-    train_loader = DataLoader(train_ds, sampler=train_sampler, batch_size=args.batch_size, num_workers=args.num_workers)
-    valid_ds.return_pair = False
-    val_loader = DataLoader(valid_ds, batch_size=args.batch_size, num_workers=args.num_workers)
+    data_module = RelativePositioningDataModule(args.window_len_s, args.tau_pos_s, batch_size=args.batch_size, num_workers=args.num_workers)
+    data_module.prepare_data()
+    # data_module.setup('fit')
 
     # Extract number of channels and time steps from dataset
-    i = next(iter(train_loader)) # ((BxCxT, pair2), labels)
-    n_channels, input_size_samples = i[0][0][0].shape
+    # i = next(iter(train_loader)) # ((BxCxT, pair2), labels)
+    # n_channels, input_size_samples = data_module.n_channels, data_module.n_times
     emb_size = 100
-    model = LitSSL(n_channels, train_ds.datasets[0].raw.info['sfreq'], input_size_samples, args.window_len_s, emb_size)
+    model = LitSSL(data_module.n_channels, data_module.sfreq, data_module.n_times, args.window_len_s, emb_size)
 
     # Use the parsed arguments in your program
-    if args.device == 'hpu':
+    if args.accelerator == 'hpu':
         from lightning_habana.pytorch.accelerator import HPUAccelerator
-        accelerator = HPUAccelerator()
-        trainer = L.Trainer(max_epochs=args.epochs, accelerator=accelerator, devices='auto', strategy='auto')
-    else:
-        trainer = L.Trainer(max_epochs=args.epochs, accelerator=args.device)
-    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader) #, ckpt_path="lightning_logs/version_10/checkpoints/epoch=199-step=20000.ckpt")
+        args.accelerator = HPUAccelerator()
+    trainer = L.Trainer(max_epochs=args.epochs, fast_dev_run=True, accelerator=args.accelerator, devices=args.device, strategy='auto', profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
+# else:
+    #     trainer = L.Trainer(max_epochs=args.epochs, accelerator=args.accelerator, devices=args.device, profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
+    trainer.fit(model, data_module) #, ckpt_path="lightning_logs/version_10/checkpoints/epoch=199-step=20000.ckpt")
