@@ -99,14 +99,6 @@ class RelativePositioningDataModule(L.LightningDataModule):
             subj_test, test_size=0.5, random_state=self.random_state)
 
         self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
-        # splitted = dict()
-        # for name, values in split_ids.items():
-        #     splitted[name] = RelativePositioningDataset(
-        #         [ds for ds in windows_ds.datasets
-        #         if ds.description['subject'] in values])
-        # self.train_ds, self.valid_ds, self.test_ds = splitted['train'], splitted['valid'], splitted['test']
-        # self.valid_ds.return_pair = False
-
         # get minimum number of samples per dataset
         # subjects = self.windows_ds.get_metadata()['subject'].values
         _, counts = np.unique(subjects, return_counts=True)
@@ -136,19 +128,9 @@ class RelativePositioningDataModule(L.LightningDataModule):
         return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
 
     def val_dataloader(self):
-        # n_examples_valid = self.n_samples_per_dataset * len(self.valid_ds.datasets)
-        # valid_sampler = DistributedRelativePositioningSampler(
-        #     self.valid_ds.get_metadata(), return_pair=False, tau_pos=self.tau_pos, tau_neg=self.tau_neg,
-        #     n_examples=n_examples_valid, same_rec_neg=self.same_rec_neg,
-        #     random_state=self.random_state, shuffle=False).presample()
         return DataLoader(self.valid_ds, sampler=torch.utils.data.distributed.DistributedSampler(self.valid_ds), batch_size=self.batch_size, num_workers=self.num_workers)
 
     def test_dataloader(self):
-        # n_examples_test = self.n_samples_per_dataset * len(self.test_ds.datasets)
-        # test_sampler = DistributedRelativePositioningSampler(
-        #     self.valid_ds.get_metadata(), return_pair=False, tau_pos=self.tau_pos, tau_neg=self.tau_neg,
-        #     n_examples=n_examples_test, same_rec_neg=self.same_rec_neg,
-        #     random_state=self.random_state, shuffle=False).presample()
         return DataLoader(self.test_ds, sampler=torch.utils.data.distributed.DistributedSampler(self.test_ds), batch_size=self.batch_size, num_workers=self.num_workers)
 
     def predict_dataloader(self):
@@ -193,6 +175,8 @@ class LitSSL(L.LightningModule):
         # it is independent of forward
         X, y = batch
         x1, x2 = X[0], X[1]
+        print('X train size', x1.element_size() * x1.nelement())
+        print('y train size', y.element_size() * y.nelement())
         z1, z2 = self.emb(x1), self.emb(x2)
         z = self.pooling(torch.abs(z1 - z2)).flatten(start_dim=1)
 
@@ -204,6 +188,8 @@ class LitSSL(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         X, Y, _ = batch
+        print('X valid size', X.element_size() * X.nelement())
+        print('y valid size', Y.element_size() * Y.nelement())
         z = self.embed(X)
         self.rankme.update(z)
 
@@ -268,7 +254,14 @@ if __name__ == '__main__':
     if args.accelerator == 'hpu':
         from lightning_habana.pytorch.accelerator import HPUAccelerator
         args.accelerator = HPUAccelerator()
-    trainer = L.Trainer(max_epochs=args.epochs, fast_dev_run=True, accelerator=args.accelerator, devices=args.device, strategy='auto', profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
+    fast_dev_run=False
+    if args.debug:
+        fast_dev_run=True
+        if args.debug == 'pytorch':
+            from lightning.pytorch.profilers import PyTorchProfiler
+            from torch.profiler import ProfilerActivity
+            args.debug = PyTorchProfiler(activities={ProfilerActivity.CPU}, profile_memory=True)
+    trainer = L.Trainer(max_epochs=args.epochs, fast_dev_run=fast_dev_run, accelerator=args.accelerator, devices=args.device, strategy='auto', profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
 # else:
     #     trainer = L.Trainer(max_epochs=args.epochs, accelerator=args.accelerator, devices=args.device, profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
     trainer.fit(model, data_module) #, ckpt_path="lightning_logs/version_10/checkpoints/epoch=199-step=20000.ckpt")
