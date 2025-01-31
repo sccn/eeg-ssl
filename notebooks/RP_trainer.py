@@ -78,8 +78,8 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
             all_ds = BaseConcatDataset(all_ds)
             self.preprocess(all_ds)
 
+    def setup(self, stage=None):
         all_ds = load_concat_dataset(path=self.data_dir, preload=False)
-
         target_name = 'age'
         for ds in all_ds.datasets:
             ds.target_name = target_name
@@ -111,7 +111,6 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         min_sample_per_dataset = np.min(counts)
         self.n_samples_per_dataset = min_sample_per_dataset # this number is a function of window_len_s and recording length
 
-    def setup(self, stage=None):
         if stage == 'fit':
             self.train_ds = RelativePositioningDataset(
                 [ds for ds in self.windows_ds.datasets
@@ -149,15 +148,11 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
 # define the LightningModule
 class LitSSL(L.LightningModule):
     def __init__(self, 
-        n_channels, 
-        sfreq, 
-        input_size_samples, 
-        window_len_s, 
-        emb_size, 
+        emb_size=100, 
         dropout=0.5
     ):
         super().__init__()
-        self.emb = VGGSSL() # self.create_embedding_layer(n_channels, sfreq, input_size_samples, window_len_s)
+        self.emb = VGGSSL() 
         self.pooling = nn.AdaptiveAvgPool2d(32)
         self.clf = nn.Sequential(
             nn.Dropout(dropout),
@@ -166,18 +161,6 @@ class LitSSL(L.LightningModule):
             nn.Linear(emb_size, 1)
         )
         self.rankme = RankMe()
-
-    def create_embedding_layer(self, n_channels, sfreq, input_size_samples, window_len_s):
-        return ShallowFBCSPNet(
-            n_chans=n_channels,
-            sfreq=sfreq,
-            n_outputs=emb_size,
-            # n_conv_chs=16,
-            n_times=input_size_samples,
-            input_window_seconds=window_len_s,
-            # dropout=0,
-            # apply_batch_norm=True,
-        )
 
     def embed(self, x):
         z = self.clf[1](self.pooling(self.emb(x)).flatten(start_dim=1))
@@ -234,11 +217,11 @@ class LitSSL(L.LightningModule):
         return optimizer
 
 def main():
-    data_module = RelativePositioningHBNDataModule()
-    data_module.prepare_data()
+    # data_module = RelativePositioningHBNDataModule()
+    # data_module.prepare_data()
 
-    emb_size = 100
-    model = LitSSL(data_module.n_channels, data_module.sfreq, data_module.n_times, data_module.window_len_s, emb_size)
+    # emb_size = 100
+    # model = LitSSL(data_module.n_channels, data_module.sfreq, data_module.n_times, data_module.window_len_s, emb_size)
 
     # # Use the parsed arguments in your program
     # if args.accelerator == 'hpu':
@@ -251,7 +234,7 @@ def main():
     #         from lightning.pytorch.profilers import PyTorchProfiler
     #         from torch.profiler import ProfilerActivity
     #         args.debug = PyTorchProfiler(activities={ProfilerActivity.CPU}, profile_memory=True)
-    cli = LightningCLI(model, data_module)
+    cli = LightningCLI(LitSSL, RelativePositioningHBNDataModule)
     # trainer = L.Trainer(max_epochs=args.epochs, fast_dev_run=fast_dev_run, accelerator=args.accelerator, devices=args.device, strategy='auto', profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
 
 if __name__ == '__main__':
