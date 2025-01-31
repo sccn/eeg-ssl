@@ -8,22 +8,28 @@ from libs.eeg_utils import *
 from libs.evaluation import train_regressor, RankMe
 from braindecode.preprocessing import (
     preprocess, Preprocessor, create_fixed_length_windows)
-from braindecode.datasets import BaseDataset, BaseConcatDataset, WindowsDataset
+from braindecode.datasets import BaseConcatDataset
 from braindecode.datautil import load_concat_dataset
+from braindecode.models import ShallowFBCSPNet
 import numpy as np
 from sklearn.model_selection import train_test_split
-from braindecode.datasets import BaseConcatDataset
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 import lightning as L
-import torch
-from torch import nn
-from braindecode.models import ShallowFBCSPNet
-from braindecode.samplers import RelativePositioningSampler 
+from lightning.pytorch.cli import LightningCLI
 
-class RelativePositioningDataModule(L.LightningDataModule):
-    def __init__(self, window_len_s, tau_pos_s, tau_neg_s=None, same_rec_neg=False, random_state=9, batch_size: int = 32, num_workers=0):
+class RelativePositioningHBNDataModule(L.LightningDataModule):
+    def __init__(self, 
+        window_len_s=10, 
+        tau_pos_s=10, 
+        tau_neg_s=None, 
+        same_rec_neg=False, 
+        random_state=9, 
+        batch_size: int = 64, 
+        num_workers=0,
+        data_dir='data/hbn_preprocessed',
+    ):
         super().__init__()
         self.window_len_s = window_len_s
         self.tau_pos_s = tau_pos_s
@@ -32,47 +38,47 @@ class RelativePositioningDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.random_state = random_state
+        self.data_dir = data_dir
+
+    def preprocess(self, all_ds):
+        from sklearn.preprocessing import scale as standard_scale
+        os.makedirs(self.data_dir, exist_ok=True)
+
+        sampling_rate = 250 # resample to follow the tutorial sampling rate
+        high_cut_hz = 59
+        # Factor to convert from V to uV
+        factor = 1e6
+        preprocessors = [
+            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
+            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+            Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
+            Preprocessor('resample', sfreq=sampling_rate),
+            Preprocessor('notch_filter', freqs=(60, 120)),
+            Preprocessor(standard_scale, channel_wise=True),
+        ]
+
+        # Transform the data
+        preprocess(all_ds, preprocessors, save_dir=self.data_dir, overwrite=True, n_jobs=-1)
 
     def prepare_data(self):
-        if not os.path.exists('data/hbn_preprocessed'):
+        # create preprocessed data if not exists
+        if not os.path.exists(self.data_dir):
             releases = list(range(9,0,-1))
             hbn_datasets = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
             hbn_release_ds = dict(zip(releases,hbn_datasets))
+            selected_releases = [1,2,6]
+            selected_tasks = ['RestingState']
+            data_path = 'data'
+            all_ds = []
+            for r in selected_releases:
+                if not os.path.exists(f"{data_path}/{hbn_release_ds[r]}"):
+                    raise ValueError(f"Data for release {r}-{hbn_release_ds[r]} not found")
+                all_ds.append(HBNDataset(hbn_release_ds[r], tasks=selected_tasks, num_workers=-1, preload=False, data_path='data'))
 
-            if not os.path.exists('data'):
-                os.makedirs('data', exist_ok=True)
-            if not os.path.exists('data/ds005510'):
-                # download zip file from google drive and put it in data folder
-                # https://drive.google.com/file/d/1KWEDoZOqyLojq0hQx8lUNTWSdZ5tBlTc/view?usp=sharing
-                import zipfile
-                with zipfile.ZipFile('data/ds005510.zip', 'r') as zip_ref:
-                    zip_ref.extractall('data')
-            # make sure you downloaded ds005505 and placed it in data folder
-            ds2 = HBNDataset(hbn_release_ds[6], tasks=['RestingState'], num_workers=-1, preload=False, data_path='data')
+            all_ds = BaseConcatDataset(all_ds)
+            self.preprocess(all_ds)
 
-            all_ds = BaseConcatDataset([ds2]) # [ds1, ds2]
-
-            from sklearn.preprocessing import scale as standard_scale
-
-            os.makedirs('data/hbn_preprocessed', exist_ok=True)
-
-            sampling_rate = 250 # resample to follow the tutorial sampling rate
-            high_cut_hz = 59
-            # Factor to convert from V to uV
-            factor = 1e6
-            preprocessors = [
-                Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
-                Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
-                Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
-                Preprocessor('resample', sfreq=sampling_rate),
-                Preprocessor('notch_filter', freqs=(60, 120)),
-                Preprocessor(standard_scale, channel_wise=True),
-            ]
-
-            # Transform the data
-            preprocess(all_ds, preprocessors, save_dir='data/hbn_preprocessed', overwrite=True, n_jobs=-1)
-        else:
-            all_ds = load_concat_dataset(path='data/hbn_preprocessed', preload=False)
+        all_ds = load_concat_dataset(path=self.data_dir, preload=False)
 
         target_name = 'age'
         for ds in all_ds.datasets:
@@ -142,7 +148,14 @@ class RelativePositioningDataModule(L.LightningDataModule):
     
 # define the LightningModule
 class LitSSL(L.LightningModule):
-    def __init__(self, n_channels, sfreq, input_size_samples, window_len_s, emb_size, dropout=0.5):
+    def __init__(self, 
+        n_channels, 
+        sfreq, 
+        input_size_samples, 
+        window_len_s, 
+        emb_size, 
+        dropout=0.5
+    ):
         super().__init__()
         self.emb = VGGSSL() # self.create_embedding_layer(n_channels, sfreq, input_size_samples, window_len_s)
         self.pooling = nn.AdaptiveAvgPool2d(32)
@@ -220,48 +233,43 @@ class LitSSL(L.LightningModule):
         optimizer = optim.Adam(self.parameters(), lr=1e-3)
         return optimizer
 
+def main():
+    data_module = RelativePositioningHBNDataModule()
+    data_module.prepare_data()
+
+    emb_size = 100
+    model = LitSSL(data_module.n_channels, data_module.sfreq, data_module.n_times, data_module.window_len_s, emb_size)
+
+    # # Use the parsed arguments in your program
+    # if args.accelerator == 'hpu':
+    #     from lightning_habana.pytorch.accelerator import HPUAccelerator
+    #     args.accelerator = HPUAccelerator()
+    # fast_dev_run=False
+    # if args.debug:
+    #     fast_dev_run=True
+    #     if args.debug == 'pytorch':
+    #         from lightning.pytorch.profilers import PyTorchProfiler
+    #         from torch.profiler import ProfilerActivity
+    #         args.debug = PyTorchProfiler(activities={ProfilerActivity.CPU}, profile_memory=True)
+    cli = LightningCLI(model, data_module)
+    # trainer = L.Trainer(max_epochs=args.epochs, fast_dev_run=fast_dev_run, accelerator=args.accelerator, devices=args.device, strategy='auto', profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
 
 if __name__ == '__main__':
-    from argparse import ArgumentParser
-    parser = ArgumentParser()
+    # from argparse import ArgumentParser
+    # parser = ArgumentParser()
 
-    # Trainer arguments
-    parser.add_argument("--window_len_s", type=int, default=10)
-    parser.add_argument("--tau_pos_s", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--accelerator", type=str, default='hpu')
-    parser.add_argument("--device", type=str, default='auto')
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--debug", type=str, default=None)
+    # # Trainer arguments
+    # parser.add_argument("--window_len_s", type=int, default=10)
+    # parser.add_argument("--tau_pos_s", type=int, default=10)
+    # parser.add_argument("--batch_size", type=int, default=64)
+    # parser.add_argument("--epochs", type=int, default=1)
+    # parser.add_argument("--accelerator", type=str, default='hpu')
+    # parser.add_argument("--device", type=str, default='auto')
+    # parser.add_argument("--num_workers", type=int, default=4)
+    # parser.add_argument("--debug", type=str, default=None)
 
-    # Parse the user inputs and defaults (returns a argparse.Namespace)
-    args = parser.parse_args()
-    if not args.device == 'auto':
-        args.device = int(args.device)
-
-    data_module = RelativePositioningDataModule(args.window_len_s, args.tau_pos_s, batch_size=args.batch_size, num_workers=args.num_workers)
-    data_module.prepare_data()
-    # data_module.setup('fit')
-
-    # Extract number of channels and time steps from dataset
-    # i = next(iter(train_loader)) # ((BxCxT, pair2), labels)
-    # n_channels, input_size_samples = data_module.n_channels, data_module.n_times
-    emb_size = 100
-    model = LitSSL(data_module.n_channels, data_module.sfreq, data_module.n_times, args.window_len_s, emb_size)
-
-    # Use the parsed arguments in your program
-    if args.accelerator == 'hpu':
-        from lightning_habana.pytorch.accelerator import HPUAccelerator
-        args.accelerator = HPUAccelerator()
-    fast_dev_run=False
-    if args.debug:
-        fast_dev_run=True
-        if args.debug == 'pytorch':
-            from lightning.pytorch.profilers import PyTorchProfiler
-            from torch.profiler import ProfilerActivity
-            args.debug = PyTorchProfiler(activities={ProfilerActivity.CPU}, profile_memory=True)
-    trainer = L.Trainer(max_epochs=args.epochs, fast_dev_run=fast_dev_run, accelerator=args.accelerator, devices=args.device, strategy='auto', profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
-# else:
-    #     trainer = L.Trainer(max_epochs=args.epochs, accelerator=args.accelerator, devices=args.device, profiler=args.debug, use_distributed_sampler=False, num_sanity_val_steps=0)
-    trainer.fit(model, data_module) #, ckpt_path="lightning_logs/version_10/checkpoints/epoch=199-step=20000.ckpt")
+    # # Parse the user inputs and defaults (returns a argparse.Namespace)
+    # args = parser.parse_args()
+    # if not args.device == 'auto':
+    #     args.device = int(args.device)
+    main()
