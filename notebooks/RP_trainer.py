@@ -3,6 +3,7 @@ sys.path.insert(0, '../')
 from libs.ssl_dataloader import *
 from libs.ssl_model import *
 from libs.ssl_utils import *
+from libs.ssl_utils import DistributedRelativePositioningSampler
 from libs.eeg_utils import *
 from braindecode.preprocessing import (
     preprocess, Preprocessor, create_fixed_length_windows)
@@ -92,7 +93,7 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
             window_size_samples=window_len_samples,
             window_stride_samples=window_stride_samples, drop_last_window=True,
             preload=False)
-        
+
         self.n_channels, self.n_times = self.windows_ds[0][0].shape
         self.sfreq = self.windows_ds.datasets[0].raw.info['sfreq']
         self.tau_pos = int(self.sfreq * self.tau_pos_s)
