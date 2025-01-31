@@ -7,6 +7,7 @@ RUN pip install numpy==1.26.4 \
     && pip install braindecode \
     && pip install tensorboard \
     && pip install lightning==2.5.0 \
+    && pip install "lightning[pytorch-extra]" \
     && pip install torchmetrics==1.6.1
 
 # Run hl-smi as an initial command and specify the script
