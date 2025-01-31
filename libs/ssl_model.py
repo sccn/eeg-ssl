@@ -3,8 +3,81 @@ import torchvision.models as torchmodels
 import torch.nn as nn
 import torch.nn.functional as F
 from abc import ABC, abstractmethod
+from torch import nn, optim
 from torch.nn.parameter import Parameter
+import lightning as L
+from .evaluation import train_regressor, RankMe
 import random
+
+class LitSSL(L.LightningModule):
+    def __init__(self, 
+        emb_size=100, 
+        dropout=0.5
+    ):
+        super().__init__()
+        self.emb = VGGSSL() 
+        self.pooling = nn.AdaptiveAvgPool2d(32)
+        self.clf = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(1024, emb_size),
+            nn.Dropout(dropout),
+            nn.Linear(emb_size, 1)
+        )
+        self.rankme = RankMe()
+
+    def embed(self, x):
+        z = self.clf[1](self.pooling(self.emb(x)).flatten(start_dim=1))
+        return z
+
+    def training_step(self, batch, batch_idx):
+        # training_step defines the train loop.
+        # it is independent of forward
+        X, y = batch
+        x1, x2 = X[0], X[1]
+        print('X train size', x1.element_size() * x1.nelement())
+        print('y train size', y.element_size() * y.nelement())
+        z1, z2 = self.emb(x1), self.emb(x2)
+        z = self.pooling(torch.abs(z1 - z2)).flatten(start_dim=1)
+
+        loss = nn.functional.binary_cross_entropy_with_logits(self.clf(z).flatten(), y)
+
+        # Logging to TensorBoard (if installed) by default
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        X, Y, _ = batch
+        print('X valid size', X.element_size() * X.nelement())
+        print('y valid size', Y.element_size() * Y.nelement())
+        z = self.embed(X)
+        self.rankme.update(z)
+
+        z = z.float().detach().cpu().numpy()
+        Y = Y.float().detach().cpu().numpy()
+        from sklearn import linear_model, neural_network
+        regr = linear_model.LinearRegression()
+        regr, linear_score = train_regressor(regr, z, Y)
+        self.log('val_linear_score', linear_score, sync_dist=True)
+        regr = neural_network.MLPRegressor(max_iter=1000)
+        regr, nn_score = train_regressor(regr, z, Y)
+        self.log('val_nn_score', nn_score, sync_dist=True)
+        
+    def test_step(self, batch, batch_idx):
+        # this is the test loop
+        X, y = batch
+        x = x.view(x.size(0), -1)
+        z = self.encoder(x)
+        x_hat = self.decoder(z)
+        test_loss = F.mse_loss(x_hat, x)
+        self.log("test_loss", test_loss)
+
+    def on_validation_epoch_end(self):
+        # log epoch metric
+        self.log('val_rankme', self.rankme.compute(), sync_dist=True)
+    
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.parameters(), lr=1e-3)
+        return optimizer
 
 class SpatialAttention(nn.Module):
     def __init__(self, out_channels=129, K=32):
