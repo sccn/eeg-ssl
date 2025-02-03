@@ -7,6 +7,7 @@ signalstore/
 aws/
 notebooks/test/
 notebooks/data/
+notebooks/eeg-ssl-voyager/
 **/lightning_logs/
 **/data/
 data/

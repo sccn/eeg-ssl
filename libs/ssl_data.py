@@ -1,0 +1,723 @@
+import os
+from pathlib import Path
+import re
+import warnings
+import json
+from typing import Any, Optional
+from joblib import Parallel, delayed
+import mne
+import scipy
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.utils import check_random_state
+from braindecode.datasets import BaseDataset, BaseConcatDataset
+from braindecode.preprocessing import (
+    preprocess, Preprocessor, create_fixed_length_windows)
+from braindecode.datautil import load_concat_dataset
+import torch
+from torch import optim
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
+import lightning as L
+
+class RelativePositioningHBNDataModule(L.LightningDataModule):
+    def __init__(self, 
+        window_len_s=10, 
+        tau_pos_s=10, 
+        tau_neg_s=None, 
+        same_rec_neg=False, 
+        random_state=9, 
+        batch_size: int = 64, 
+        num_workers=0,
+        data_dir='data/hbn_preprocessed',
+        overwrite_preprocessed=False,
+    ):
+        super().__init__()
+        self.window_len_s = window_len_s
+        self.tau_pos_s = tau_pos_s
+        self.tau_neg_s = tau_neg_s
+        self.same_rec_neg = same_rec_neg
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.random_state = random_state
+        self.data_dir = data_dir
+        self.overwrite_preprocessed = overwrite_preprocessed
+        self.save_hyperparameters()
+
+    def preprocess(self, all_ds):
+        from sklearn.preprocessing import scale as standard_scale
+        os.makedirs(self.data_dir, exist_ok=True)
+
+        sampling_rate = 250 # resample to follow the tutorial sampling rate
+        high_cut_hz = 59
+        # Factor to convert from V to uV
+        factor = 1e6
+        preprocessors = [
+            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
+            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+            Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
+            Preprocessor('resample', sfreq=sampling_rate),
+            Preprocessor('notch_filter', freqs=(60, 120)),
+            Preprocessor(standard_scale, channel_wise=True),
+        ]
+
+        # Transform the data
+        preprocess(all_ds, preprocessors, save_dir=self.data_dir, overwrite=True, n_jobs=-1)
+
+    def prepare_data(self):
+        # create preprocessed data if not exists
+        if not os.path.exists(self.data_dir) or self.overwrite_preprocessed:
+            os.makedirs(self.data_dir, exist_ok=True)
+            releases = list(range(9,0,-1))
+            hbn_datasets = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
+            hbn_release_ds = dict(zip(releases,hbn_datasets))
+            selected_releases = [1,3,6]
+            selected_tasks = ['RestingState']
+            data_path = 'data'
+            all_ds = []
+            for r in selected_releases:
+                if not os.path.exists(f"{data_path}/{hbn_release_ds[r]}"):
+                    raise ValueError(f"Data for release {r}-{hbn_release_ds[r]} not found")
+                all_ds.append(HBNDataset(hbn_release_ds[r], tasks=selected_tasks, num_workers=-1, preload=False, data_path='data'))
+
+            all_ds = BaseConcatDataset(all_ds)
+            self.preprocess(all_ds)
+
+    def setup(self, stage=None):
+        all_ds = load_concat_dataset(path=self.data_dir, preload=False)
+        target_name = 'age'
+        for ds in all_ds.datasets:
+            ds.target_name = target_name
+
+        fs = all_ds.datasets[0].raw.info['sfreq']
+        window_len_samples = int(fs * self.window_len_s)
+        window_stride_samples = int(fs * self.window_len_s) # non-overlapping
+        self.windows_ds = create_fixed_length_windows(
+            all_ds, start_offset_samples=0, stop_offset_samples=None,
+            window_size_samples=window_len_samples,
+            window_stride_samples=window_stride_samples, drop_last_window=True,
+            preload=False)
+
+        self.n_channels, self.n_times = self.windows_ds[0][0].shape
+        self.sfreq = self.windows_ds.datasets[0].raw.info['sfreq']
+        self.tau_pos = int(self.sfreq * self.tau_pos_s)
+        self.tau_neg = int(self.sfreq * self.tau_neg_s) if self.tau_neg_s else int(self.sfreq * 2 * self.tau_pos_s)
+
+        subjects = np.unique(self.windows_ds.description['subject'])
+        subj_train, subj_test = train_test_split(
+            subjects, test_size=0.4, random_state=self.random_state)
+        subj_valid, subj_test = train_test_split(
+            subj_test, test_size=0.5, random_state=self.random_state)
+
+        self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
+        # get minimum number of samples per dataset
+        # subjects = self.windows_ds.get_metadata()['subject'].values
+        _, counts = np.unique(subjects, return_counts=True)
+        min_sample_per_dataset = np.min(counts)
+        self.n_samples_per_dataset = min_sample_per_dataset # this number is a function of window_len_s and recording length
+
+        if stage == 'fit':
+            self.train_ds = RelativePositioningDataset(
+                [ds for ds in self.windows_ds.datasets
+                if ds.description['subject'] in self.split_ids['train']])
+            self.valid_ds = RelativePositioningDataset(
+                [ds for ds in self.windows_ds.datasets
+                if ds.description['subject'] in self.split_ids['valid']])
+            self.valid_ds.return_pair = False
+        elif stage == 'test':
+            self.test_ds = RelativePositioningDataset(
+                [ds for ds in self.windows_ds.datasets
+                if ds.description['subject'] in self.split_ids['test']])
+            self.test_ds.return_pair = False
+
+    def train_dataloader(self):
+        n_examples_train = self.n_samples_per_dataset * len(self.train_ds.datasets)
+        train_sampler = DistributedRelativePositioningSampler(
+            self.train_ds.get_metadata(), tau_pos=self.tau_pos, tau_neg=self.tau_neg,
+            n_examples=n_examples_train, same_rec_neg=self.same_rec_neg, random_state=self.random_state)
+        return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
+
+    def val_dataloader(self):
+        return DataLoader(self.valid_ds, batch_size=self.batch_size, num_workers=self.num_workers)
+
+    def test_dataloader(self):
+        return DataLoader(self.test_ds, batch_size=self.batch_size, num_workers=self.num_workers)
+
+    def predict_dataloader(self):
+        pass
+
+    def teardown(self, stage: str):
+        # Used to clean-up when the run is finished
+        pass
+
+    def configure_optimizers(self):
+            optimizer = optim.Adam(self.parameters(), lr=1e-3)
+            return optimizer 
+
+
+class DistributedRecordingSampler(DistributedSampler):
+    """Base sampler simplifying sampling from recordings.
+
+    Parameters
+    ----------
+    metadata : pd.DataFrame
+        DataFrame with at least one of {subject, session, run} columns for each
+        window in the BaseConcatDataset to sample examples from. Normally
+        obtained with `BaseConcatDataset.get_metadata()`. For instance,
+        `metadata.head()` might look like this:
+
+           i_window_in_trial  i_start_in_trial  i_stop_in_trial  target  subject    session    run
+        0                  0                 0              500      -1        4  session_T  run_0
+        1                  1               500             1000      -1        4  session_T  run_0
+        2                  2              1000             1500      -1        4  session_T  run_0
+        3                  3              1500             2000      -1        4  session_T  run_0
+        4                  4              2000             2500      -1        4  session_T  run_0
+
+    random_state : np.RandomState | int | None
+        Random state.
+    num_replicas (int, optional): Number of processes participating in
+        distributed training. By default, :attr:`world_size` is retrieved from the
+        current distributed group.
+    rank (int, optional): Rank of the current process within :attr:`num_replicas`.
+        By default, :attr:`rank` is retrieved from the current distributed
+        group.
+    shuffle (bool, optional): If ``True`` (default), sampler will shuffle the
+        indices.
+    drop_last (bool, optional): if ``True``, then the sampler will drop the
+        tail of the data to make it evenly divisible across the number of
+        replicas. If ``False``, the sampler will add extra indices to make
+        the data evenly divisible across the replicas. Default: ``False``.
+
+    Attributes
+    ----------
+    info : pd.DataFrame
+        Series with MultiIndex index which contains the subject, session, run
+        and window indices information in an easily accessible structure for
+        quick sampling of windows.
+    n_recordings : int
+        Number of recordings available.
+    """
+    def __init__(
+            self, 
+            metadata, 
+            random_state=None,
+            num_replicas: Optional[int] = None,
+            rank: Optional[int] = None,
+            shuffle: bool = True,
+            drop_last: bool = False
+    ):
+        self.metadata = metadata
+        self.info = self._init_info(metadata)
+        self.rng = check_random_state(random_state)
+        if not dist.is_available():
+            raise RuntimeError("Requires distributed package to be available")
+        rank = dist.get_rank()
+        super().__init__(self.info, num_replicas, rank, shuffle, random_state, drop_last)
+        self._iterator = list(super().__iter__())
+
+    def _init_info(self, metadata, required_keys=None):
+        """Initialize ``info`` DataFrame.
+
+        Parameters
+        ----------
+        required_keys : list(str) | None
+            List of additional columns of the metadata DataFrame that we should
+            groupby when creating ``info``.
+
+        Returns
+        -------
+            See class attributes.
+        """
+        keys = [k for k in ['subject', 'session', 'run']
+                if k in self.metadata.columns]
+        if not keys:
+            raise ValueError(
+                'metadata must contain at least one of the following columns: '
+                'subject, session or run.')
+
+        if required_keys is not None:
+            missing_keys = [
+                k for k in required_keys if k not in self.metadata.columns]
+            if len(missing_keys) > 0:
+                raise ValueError(
+                    f'Columns {missing_keys} were not found in metadata.')
+            keys += required_keys
+
+        metadata = metadata.reset_index().rename(
+            columns={'index': 'window_index'})
+        info = metadata.reset_index().groupby(keys)[
+            ['index', 'i_start_in_trial']].agg(['unique'])
+        info.columns = info.columns.get_level_values(0)
+
+        return info
+
+    def sample_recording(self):
+        """Return a random recording index.
+        """
+        # XXX docstring missing
+        return self.rng.choice(self._iterator)
+
+    def sample_window(self, rec_ind=None):
+        """Return a specific window.
+        """
+        # XXX docstring missing
+        if rec_ind is None:
+            rec_ind = self.sample_recording()
+        win_ind = self.rng.choice(self.info.iloc[rec_ind]['index'])
+        return win_ind, rec_ind
+
+    @property
+    def n_recordings(self):
+        return self.info.shape[0]
+
+class DistributedRelativePositioningSampler(DistributedRecordingSampler):
+    """Sample examples for the relative positioning task from [Banville2020]_.
+
+    Sample examples as tuples of two window indices, with a label indicating
+    whether the windows are close or far, as defined by tau_pos and tau_neg.
+
+    Parameters
+    ----------
+    metadata : pd.DataFrame
+        See RecordingSampler.
+    tau_pos : int
+        Size of the positive context, in samples. A positive pair contains two
+        windows x1 and x2 which are separated by at most `tau_pos` samples.
+    tau_neg : int
+        Size of the negative context, in samples. A negative pair contains two
+        windows x1 and x2 which are separated by at least `tau_neg` samples and
+        at most `tau_max` samples. Ignored if `same_rec_neg` is False.
+    n_examples : int
+        Number of pairs to extract.
+    tau_max : int | None
+        See `tau_neg`.
+    same_rec_neg : bool
+        If True, sample negative pairs from within the same recording. If
+        False, sample negative pairs from two different recordings.
+    random_state : None | np.RandomState | int
+        Random state.
+
+    References
+    ----------
+    .. [Banville2020] Banville, H., Chehab, O., Hyvärinen, A., Engemann, D. A.,
+           & Gramfort, A. (2020). Uncovering the structure of clinical EEG
+           signals with self-supervised learning.
+           arXiv preprint arXiv:2007.16104.
+    """
+    def __init__(self, metadata, tau_pos, tau_neg, n_examples, tau_max=None,
+                 same_rec_neg=True, random_state=None, shuffle=True):
+        super().__init__(metadata, random_state=random_state, shuffle=shuffle)
+
+        self.tau_pos = tau_pos
+        self.tau_neg = tau_neg
+        self.tau_max = np.inf if tau_max is None else tau_max
+        self.n_examples = n_examples
+        self.same_rec_neg = same_rec_neg
+
+        if not same_rec_neg and self.n_recordings < 2:
+            raise ValueError('More than one recording must be available when '
+                             'using across-recording negative sampling.')
+
+    def _sample_pair(self):
+        """Sample a pair of two windows.
+        """
+        # Sample first window
+        win_ind1, rec_ind1 = self.sample_window()
+        ts1 = self.metadata.iloc[win_ind1]['i_start_in_trial']
+        ts = self.info.iloc[rec_ind1]['i_start_in_trial']
+
+        # Decide whether the pair will be positive or negative
+        pair_type = self.rng.binomial(1, 0.5)
+        win_ind2 = None
+        if pair_type == 0:  # Negative example
+            if self.same_rec_neg:
+                mask = (
+                    ((ts <= ts1 - self.tau_neg) & (ts >= ts1 - self.tau_max)) |
+                    ((ts >= ts1 + self.tau_neg) & (ts <= ts1 + self.tau_max))
+                )
+            else:
+                rec_ind2 = rec_ind1
+                while rec_ind2 == rec_ind1:
+                    win_ind2, rec_ind2 = self.sample_window()
+        elif pair_type == 1:  # Positive example
+            mask = (ts >= ts1 - self.tau_pos) & (ts <= ts1 + self.tau_pos)
+
+        if win_ind2 is None:
+            mask[ts == ts1] = False  # same window cannot be sampled twice
+            if sum(mask) == 0:
+                raise NotImplementedError
+            win_ind2 = self.rng.choice(self.info.iloc[rec_ind1]['index'][mask])
+
+        return win_ind1, win_ind2, float(pair_type)
+
+    def presample(self):
+        """Presample examples.
+
+        Once presampled, the examples are the same from one epoch to another.
+        """
+        self.examples = [self._sample_pair() for _ in range(self.n_examples)]
+        return self
+
+    def __iter__(self):
+        """Iterate over pairs.
+
+        Yields
+        ------
+            (int): position of the first window in the dataset.
+            (int): position of the second window in the dataset.
+            (float): 0 for negative pair, 1 for positive pair.
+        """
+        for i in range(self.n_examples):
+            if hasattr(self, 'examples'):
+                yield self.examples[i]
+            else:
+                yield self._sample_pair()
+
+    def __len__(self):
+        return self.n_examples
+
+class RelativePositioningDataset(BaseConcatDataset):
+    """BaseConcatDataset with __getitem__ that expects 2 indices and a target.
+    """
+
+    def __init__(self, list_of_ds):
+        super().__init__(list_of_ds)
+        self.return_pair = True
+
+    def __getitem__(self, index):
+        if self.return_pair:
+            ind1, ind2, y = index
+            return (super().__getitem__(ind1)[0],
+                    super().__getitem__(ind2)[0]), y
+        else:
+            return super().__getitem__(index)
+
+    @property
+    def return_pair(self):
+        return self._return_pair
+
+    @return_pair.setter
+    def return_pair(self, value):
+        self._return_pair = value
+class HBNDataset(BaseConcatDataset):
+    """A class for Health Brain Network datasets.
+
+    Parameters
+    ----------
+    dataset_name: str
+        name of dataset included in eegdash to be fetched
+    subject_ids: list(int) | int | None
+        (list of) int of subject(s) to be fetched. If None, data of all
+        subjects is fetched.
+    dataset_kwargs: dict, optional
+        optional dictionary containing keyword arguments
+        to pass to the moabb dataset when instantiating it.
+    dataset_load_kwargs: dict, optional
+        optional dictionary containing keyword arguments
+        to pass to the moabb dataset's load_data method.
+        Allows using the moabb cache_config=None and
+        process_pipeline=None.
+    """
+
+    def __init__(
+        self,
+        dataset_name: str,                                  # dataset name (dsnumber in BIDS)
+        data_path: str = '/mnt/nemar/openneuro',            # path to dataset
+        subjects: list[int] | int | None = None,            # subject ids to fetch. Default None fetches all
+        tasks: list[int] | int | None = None,
+        preload: bool = False,
+        num_workers: int = 1,
+        dataset_kwargs: dict[str, Any] | None = None,
+        dataset_load_kwargs: dict[str, Any] | None = None,
+    ):
+        self.bids_dataset = BIDSDataset(data_dir=f'{data_path}/{dataset_name}', dataset=dataset_name)
+        subject_df = self.bids_dataset.subjects_metadata
+        def parseBIDSfile(f):
+            raw = mne.io.read_raw_eeglab(f, preload=preload)
+            metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
+            metadata = {key: getattr(self.bids_dataset, key)(f) for key in metadata_keys}
+            subject = self.bids_dataset.subject(f)
+            subject_metadata_keys = ['age', 'sex', 'ehq_total', 'p_factor', 'attention', 'internalizing', 'externalizing']
+            metadata.update({key: subject_df.loc[subject_df['participant_id'] == f"sub-{subject}"][key].values[0] for key in subject_metadata_keys})
+            # # electrodes locations in 2D
+            # lt = mne.channels.find_layout(raw.info, 'eeg')
+            # x, y = lt.pos[:,0], lt.pos[:,1]
+            # metadata['electrodes_xy'] = np.array([x, y]).T
+            return BaseDataset(raw, metadata)
+
+        files = self.bids_dataset.get_files()
+        # filter files
+        if subjects:
+            if type(subjects) == int:
+                all_subjects = self.bids_dataset.subjects
+                subjects = all_subjects[:subjects]
+                files = [f for f in files if any(subject in f for subject in subjects)]
+            else:
+                files = [f for f in files if any(subject in f for subject in subjects)]
+        if tasks:
+            files = [f for f in files if any(task in f for task in tasks)]
+
+        # parallel vs serial execution
+        if num_workers == 1:
+            all_base_ds = []
+            for f in files:
+                base_ds = parseBIDSfile(f)
+                if base_ds:
+                    all_base_ds.append(base_ds)
+        else:
+            all_base_ds = Parallel(n_jobs=num_workers)(
+                    delayed(parseBIDSfile)(f) for f in files
+            )
+        super().__init__(all_base_ds)
+    
+    def load_data(self, fname):
+        from mne.io.eeglab._eeglab import _check_for_scipy_mat_struct
+        from scipy.io import loadmat
+        eeglab_fields = ['setname','filename','filepath','subject','group','condition','session','comments','nbchan','trials','pnts','srate','xmin','xmax','times','icaact','icawinv','icasphere','icaweights','icachansind','chanlocs','urchanlocs','chaninfo','ref','event','urevent','eventdescription','epoch','epochdescription','reject','stats','specdata','specicaact','splinefile','icasplinefile','dipfit','history','saved','etc']
+        eeg = loadmat(fname, squeeze_me=True, mat_dtype=False, variable_names=eeglab_fields)
+        eeg['data'] = fname
+        return _check_for_scipy_mat_struct(eeg)
+        
+class BIDSDataset():
+    ALLOWED_FILE_FORMAT = ['eeglab', 'brainvision', 'biosemi', 'european']
+    RAW_EXTENSION = {
+        'eeglab': '.set',
+        'brainvision': '.vhdr',
+        'biosemi': '.bdf',
+        'european': '.edf'
+    }
+    METADATA_FILE_EXTENSIONS = ['eeg.json', 'channels.tsv', 'electrodes.tsv', 'events.tsv', 'events.json']
+    def __init__(self,
+            data_dir=None,                            # dataset directory
+            dataset='',                               # dataset name (e.g. ds005505)
+            raw_format='eeglab',                      # format of raw data
+        ):                            
+        if data_dir is None or not os.path.exists(data_dir):
+            raise ValueError('data_dir must be specified and must exist')
+        self.bidsdir = Path(data_dir)
+        self.dataset = dataset
+
+        if raw_format.lower() not in self.ALLOWED_FILE_FORMAT:
+            raise ValueError('raw_format must be one of {}'.format(self.ALLOWED_FILE_FORMAT))
+        self.raw_format = raw_format.lower()
+
+        # get all .set files in the bids directory
+        temp_dir = (Path().resolve() / 'data')
+        if not os.path.exists(temp_dir):
+            os.mkdir(temp_dir)
+        if not os.path.exists(temp_dir / f'{dataset}_files.npy'):
+            self.files = self.get_files_with_extension_parallel(self.bidsdir, extension=self.RAW_EXTENSION[self.raw_format])
+            np.save(temp_dir / f'{dataset}_files.npy', self.files)
+        else:
+            self.files = np.load(temp_dir / f'{dataset}_files.npy', allow_pickle=True)
+
+    @property
+    def subjects_metadata(self):
+        subject_file = self.bidsdir / 'participants.tsv'
+        if not os.path.exists(subject_file):
+            raise ValueError('participants.tsv file not found in dataset')
+        else:
+            subjects = pd.read_csv(subject_file, sep='\t')
+            return subjects
+    
+    @property
+    def subjects(self):
+        return self.subjects_metadata['participant_id'].values
+
+    def get_property_from_filename(self, property, filename):
+        import platform
+        if platform.system() == "Windows":
+            lookup = re.search(rf'{property}-(.*?)[_\\]', filename)
+        else:
+            lookup = re.search(rf'{property}-(.*?)[_\/]', filename)
+        return lookup.group(1) if lookup else ''
+
+    def get_bids_file_inheritance(self, path, basename, extension):
+        '''
+        Get all files with given extension that applies to the basename file 
+        following the BIDS inheritance principle in the order of lowest level first
+        @param
+            basename: bids file basename without _eeg.set extension for example
+            extension: e.g. channels.tsv
+        '''
+        top_level_files = ['README', 'dataset_description.json', 'participants.tsv']
+        bids_files = []
+
+        # check if path is str object
+        if isinstance(path, str):
+            path = Path(path)
+        if not path.exists:
+            raise ValueError('path {path} does not exist')
+
+        # check if file is in current path
+        for file in os.listdir(path):
+            # target_file = path / f"{cur_file_basename}_{extension}"
+            if os.path.isfile(path/file):
+                cur_file_basename = file[:file.rfind('_')]
+                if file.endswith(extension) and cur_file_basename in basename:
+                    filepath = path / file
+                    bids_files.append(filepath)
+
+        # check if file is in top level directory
+        if any(file in os.listdir(path) for file in top_level_files):
+            return bids_files
+        else:
+            # call get_bids_file_inheritance recursively with parent directory
+            bids_files.extend(self.get_bids_file_inheritance(path.parent, basename, extension))
+            return bids_files
+
+    def get_bids_metadata_files(self, filepath, metadata_file_extension):
+        """
+        (Wrapper for self.get_bids_file_inheritance)
+        Get all BIDS metadata files that are associated with the given filepath, following the BIDS inheritance principle.
+        
+        Args:
+            filepath (str or Path): The filepath to get the associated metadata files for.
+            metadata_files_extensions (list): A list of file extensions to search for metadata files.
+        
+        Returns:
+            list: A list of filepaths for all the associated metadata files
+        """
+        if isinstance(filepath, str):
+            filepath = Path(filepath)
+        if not filepath.exists:
+            raise ValueError('filepath {filepath} does not exist')
+        path, filename = os.path.split(filepath)
+        basename = filename[:filename.rfind('_')]
+        # metadata files
+        meta_files = self.get_bids_file_inheritance(path, basename, metadata_file_extension)
+        if not meta_files:
+            raise ValueError('No metadata files found for filepath {filepath} and extension {metadata_file_extension}')
+        else:
+            return meta_files
+        
+    def scan_directory(self, directory, extension):
+        result_files = []
+        directory_to_ignore = ['.git']
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.name.endswith(extension):
+                    print('Adding ', entry.path)
+                    result_files.append(entry.path)
+                elif entry.is_dir():
+                    # check that entry path doesn't contain any name in ignore list
+                    if not any(name in entry.name for name in directory_to_ignore):
+                        result_files.append(entry.path)  # Add directory to scan later
+        return result_files
+
+    def get_files_with_extension_parallel(self, directory, extension='.set', max_workers=-1):
+        result_files = []
+        dirs_to_scan = [directory]
+
+        # Use joblib.Parallel and delayed to parallelize directory scanning
+        while dirs_to_scan:
+            print(f"Scanning {len(dirs_to_scan)} directories...", dirs_to_scan)
+            # Run the scan_directory function in parallel across directories
+            results = Parallel(n_jobs=max_workers, prefer="threads", verbose=1)(
+                delayed(self.scan_directory)(d, extension) for d in dirs_to_scan
+            )
+            
+            # Reset the directories to scan and process the results
+            dirs_to_scan = []
+            for res in results:
+                for path in res:
+                    if os.path.isdir(path):
+                        dirs_to_scan.append(path)  # Queue up subdirectories to scan
+                    else:
+                        result_files.append(path)  # Add files to the final result
+            print(f"Current number of files: {len(result_files)}")
+
+        return result_files
+
+    def load_raw(self, raw_file, preload=False):
+        print(f"Loading {raw_file}")
+        if raw_file.endswith('.set'):
+            EEG = mne.io.read_raw_eeglab(raw_file, preload=preload)
+        else:
+            EEG = mne.io.Raw(raw_file, preload=preload)
+        return EEG
+    
+    def get_files(self):
+        return self.files
+    
+    def resolve_bids_json(self, json_files: list):
+        """
+        Resolve the BIDS JSON files and return a dictionary of the resolved values.
+        Args:
+            json_files (list): A list of JSON files to resolve in order of leaf level first
+
+        Returns:
+            dict: A dictionary of the resolved values.
+        """
+        if len(json_files) == 0:
+            raise ValueError('No JSON files provided')
+        json_files.reverse() # TODO undeterministic
+
+        json_dict = {}
+        for json_file in json_files:
+            with open(json_file) as f:
+                json_dict.update(json.load(f))
+        return json_dict
+
+    def sfreq(self, data_filepath):
+        json_files = self.get_bids_metadata_files(data_filepath, 'eeg.json')
+        if len(json_files) == 0:
+            raise ValueError('No eeg.json found')
+
+        metadata = self.resolve_bids_json(json_files)
+        if 'SamplingFrequency' not in metadata:
+            raise ValueError('SamplingFrequency not found in metadata')
+        else:
+            return metadata['SamplingFrequency']
+    
+    def electrodes_xy(self, data_filepath, use_bids=False):
+        if use_bids:
+            try:
+                electrodes_files = self.get_bids_metadata_files(data_filepath, 'electrodes.tsv')
+                electrodes = pd.read_csv(electrodes_files[0], sep='\t')
+                # TODO this is totally wrong. Just a placeholder to get the pipeline flow
+                # interpret electrodes location using coordsystem and use correct projection function
+                coordsystem = self.get_bids_metadata_files(data_filepath, 'coordsystem.json')
+                x = np.asarray(electrodes['x'])
+                y = np.asarray(electrodes['y'])
+                z = np.asarray(electrodes['z'])
+                # to create mne info and base raw
+                # https://mne.tools/stable/generated/mne.create_info.html#mne.create_info
+                # https://mne.tools/stable/generated/mne.io.BaseRaw.html#mne.io.BaseRaw
+                from eeg_positions.utils import _stereographic_projection
+                x, y = _stereographic_projection(x,y,z)
+            except ValueError:
+                warnings.warn('No electrodes.tsv found. Attempt to extract electrodes locations from raw file')
+                EEG = self.load_raw(data_filepath)
+                # get 2D electrodes locations from mne Layout
+                # https://mne.tools/stable/auto_tutorials/intro/40_sensor_locations.html
+                lt = mne.channels.find_layout(EEG.info, 'eeg')
+                x, y = lt.pos[:,0], lt.pos[:,1]
+        else:
+            EEG = self.load_raw(data_filepath)
+            EEG = EEG.pick('eeg')
+            # get 2D electrodes locations from mne Layout
+            # https://mne.tools/stable/auto_tutorials/intro/40_sensor_locations.html
+            lt = mne.channels.find_layout(EEG.info)
+            x, y = lt.pos[:,0], lt.pos[:,1]
+        
+        return x, y
+
+    def task(self, data_filepath):
+        return self.get_property_from_filename('task', data_filepath)
+        
+    def session(self, data_filepath):
+        return self.get_property_from_filename('session', data_filepath)
+
+    def run(self, data_filepath):
+        return self.get_property_from_filename('run', data_filepath)
+
+    def subject(self, data_filepath):
+        return self.get_property_from_filename('sub', data_filepath)
+    
+if __name__ == "__main__":
+    dataset = HBNDataset(
+        dataset_name = "ds004186", # ds004186 ds005510
+    )

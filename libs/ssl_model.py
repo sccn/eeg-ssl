@@ -24,6 +24,7 @@ class LitSSL(L.LightningModule):
             nn.Linear(emb_size, 1)
         )
         self.rankme = RankMe()
+        self.save_hyperparameters()
 
     def embed(self, x):
         z = self.clf[1](self.pooling(self.emb(x)).flatten(start_dim=1))
