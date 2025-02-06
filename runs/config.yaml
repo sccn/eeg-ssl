@@ -7,11 +7,11 @@ fit:
     devices: 2
     num_nodes: 1
     precision: null
-    logger: 
-      class_path: lightning.pytorch.loggers.WandbLogger
-      init_args:
-        project: eeg-ssl-voyager
-        mode: online
+    logger: false
+      # class_path: lightning.pytorch.loggers.WandbLogger
+      # init_args:
+      #   project: eeg-ssl-voyager
+      #   mode: online
     callbacks: null
     fast_dev_run: false
     max_epochs: 1
@@ -56,8 +56,9 @@ fit:
     random_state: 9
     batch_size: 64
     num_workers: 0
-    data_dir: data/hbn_preprocessed
+    data_dir: data
     overwrite_preprocessed: false
+    datasets: [ds005505,ds005507,ds005508,ds005509,ds005510,ds005512]
   optimizer: null
   lr_scheduler: null
   ckpt_path: null

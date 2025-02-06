@@ -1,0 +1,2 @@
+- python RP_trainer.py fit --trainer.logger False --trainer.max_epochs 1 --trainer.devices 1 --data.datasets [ds005505,ds005507,ds005508,ds005509,ds005510,ds005512] --data.n_samples_per_dataset 250 --data.batch_size 128 --trainer.check_val_every_n_epoch 3
+- http://localhost:8888/lab?token=b08d428c534c4f5cad5366c18e281550967f5aa979161618

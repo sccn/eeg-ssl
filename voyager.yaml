@@ -14,6 +14,7 @@ spec:
         containers:
                 - name: eeg-ssl-container
                   image: dtyoung/eeg-ssl:voyager
+                  imagePullPolicy: Always
                   volumeMounts:
                          - mountPath: /scratch
                            name: scratch
@@ -37,5 +38,9 @@ spec:
                       value: "/ceph/results/stable_diffusion/inference_from_trained_habana"
                   command: ["/bin/sh", "-c"]
                   # Just spin & wait forever
-                  command: [ "/bin/bash", "-c", "--" ]
-                  args: [ "while true; do sleep 30; done;" ]
+                  command: [ "/bin/bash", "-c"]
+                  # args: [ "while true; do sleep 30; done;" ]
+                  args:
+                  - >-
+                    pip install jupyterlab ;
+                    jupyter lab --allow-root

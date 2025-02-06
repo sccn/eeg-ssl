@@ -35,8 +35,6 @@ class LitSSL(L.LightningModule):
         # it is independent of forward
         X, y = batch
         x1, x2 = X[0], X[1]
-        print('X train size', x1.element_size() * x1.nelement())
-        print('y train size', y.element_size() * y.nelement())
         z1, z2 = self.emb(x1), self.emb(x2)
         z = self.pooling(torch.abs(z1 - z2)).flatten(start_dim=1)
 
@@ -48,8 +46,6 @@ class LitSSL(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         X, Y, _ = batch
-        print('X valid size', X.element_size() * X.nelement())
-        print('y valid size', Y.element_size() * Y.nelement())
         z = self.embed(X)
         self.rankme.update(z)
 

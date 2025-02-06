@@ -15,6 +15,7 @@ from braindecode.datasets import BaseDataset, BaseConcatDataset
 from braindecode.preprocessing import (
     preprocess, Preprocessor, create_fixed_length_windows)
 from braindecode.datautil import load_concat_dataset
+from braindecode.samplers import RelativePositioningSampler
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
@@ -28,10 +29,12 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         tau_pos_s=10, 
         tau_neg_s=None, 
         same_rec_neg=False, 
+        n_samples_per_dataset=2000,
         random_state=9, 
         batch_size: int = 64, 
         num_workers=0,
-        data_dir='data/hbn_preprocessed',
+        data_dir='data',
+        datasets:list[str]=None,
         overwrite_preprocessed=False,
     ):
         super().__init__()
@@ -39,16 +42,20 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         self.tau_pos_s = tau_pos_s
         self.tau_neg_s = tau_neg_s
         self.same_rec_neg = same_rec_neg
+        self.n_samples_per_dataset = n_samples_per_dataset
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.random_state = random_state
         self.data_dir = data_dir
         self.overwrite_preprocessed = overwrite_preprocessed
+        HBN_DSNUMBERS = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
+        self.datasets = datasets if datasets is not None else HBN_DSNUMBERS
+        print(f"Using datasets: {self.datasets}")
         self.save_hyperparameters()
 
-    def preprocess(self, all_ds):
+    def preprocess(self, ds, savedir):
         from sklearn.preprocessing import scale as standard_scale
-        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(savedir, exist_ok=True)
 
         sampling_rate = 250 # resample to follow the tutorial sampling rate
         high_cut_hz = 59
@@ -62,35 +69,29 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
             Preprocessor('notch_filter', freqs=(60, 120)),
             Preprocessor(standard_scale, channel_wise=True),
         ]
-
         # Transform the data
-        preprocess(all_ds, preprocessors, save_dir=self.data_dir, overwrite=True, n_jobs=-1)
+        preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=-1)
+
+        return ds
 
     def prepare_data(self):
         # create preprocessed data if not exists
-        if not os.path.exists(self.data_dir) or self.overwrite_preprocessed:
-            os.makedirs(self.data_dir, exist_ok=True)
-            releases = list(range(9,0,-1))
-            hbn_datasets = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
-            hbn_release_ds = dict(zip(releases,hbn_datasets))
-            selected_releases = [1,3,6]
-            selected_tasks = ['RestingState']
-            data_path = 'data'
-            all_ds = []
-            for r in selected_releases:
-                if not os.path.exists(f"{data_path}/{hbn_release_ds[r]}"):
-                    raise ValueError(f"Data for release {r}-{hbn_release_ds[r]} not found")
-                all_ds.append(HBNDataset(hbn_release_ds[r], tasks=selected_tasks, num_workers=-1, preload=False, data_path='data'))
-
-            all_ds = BaseConcatDataset(all_ds)
-            self.preprocess(all_ds)
+        selected_tasks = ['RestingState']
+        for dsnumber in self.datasets:
+            savedir = f'{self.data_dir}/{dsnumber}_preprocessed'
+            if not os.path.exists(savedir) or self.overwrite_preprocessed:
+                ds = HBNDataset(dsnumber, data_path=f"{self.data_dir}/{dsnumber}", tasks=selected_tasks, num_workers=-1, preload=False)
+                ds = self.preprocess(ds, savedir)
 
     def setup(self, stage=None):
-        all_ds = load_concat_dataset(path=self.data_dir, preload=False)
+        all_ds = BaseConcatDataset([load_concat_dataset(path=f'{self.data_dir}/{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets])
+        print(f"Loaded {len(all_ds.datasets)} datasets")
+        # set desired label target
         target_name = 'age'
         for ds in all_ds.datasets:
             ds.target_name = target_name
 
+        # Extract windows
         fs = all_ds.datasets[0].raw.info['sfreq']
         window_len_samples = int(fs * self.window_len_s)
         window_stride_samples = int(fs * self.window_len_s) # non-overlapping
@@ -105,26 +106,29 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         self.tau_pos = int(self.sfreq * self.tau_pos_s)
         self.tau_neg = int(self.sfreq * self.tau_neg_s) if self.tau_neg_s else int(self.sfreq * 2 * self.tau_pos_s)
 
-        subjects = np.unique(self.windows_ds.description['subject'])
-        subj_train, subj_test = train_test_split(
-            subjects, test_size=0.4, random_state=self.random_state)
-        subj_valid, subj_test = train_test_split(
-            subj_test, test_size=0.5, random_state=self.random_state)
+        # subjects = np.unique(self.windows_ds.description['subject'])
+        # subj_train, subj_test = train_test_split(
+        #     subjects, test_size=0.4, random_state=self.random_state)
+        # subj_valid, subj_test = train_test_split(
+        #     subj_test, test_size=0.5, random_state=self.random_state)
 
-        self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
-        # get minimum number of samples per dataset
-        # subjects = self.windows_ds.get_metadata()['subject'].values
-        _, counts = np.unique(subjects, return_counts=True)
-        min_sample_per_dataset = np.min(counts)
-        self.n_samples_per_dataset = min_sample_per_dataset # this number is a function of window_len_s and recording length
+        # self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
+        # # get minimum number of samples per dataset
+        # _, counts = np.unique(subjects, return_counts=True)
+        # min_sample_per_dataset = np.min(counts)
+        # self.n_samples_per_dataset = min_sample_per_dataset # this number is a function of window_len_s and recording length
 
         if stage == 'fit':
-            self.train_ds = RelativePositioningDataset(
-                [ds for ds in self.windows_ds.datasets
-                if ds.description['subject'] in self.split_ids['train']])
-            self.valid_ds = RelativePositioningDataset(
-                [ds for ds in self.windows_ds.datasets
-                if ds.description['subject'] in self.split_ids['valid']])
+            # self.train_ds = RelativePositioningDataset(
+            #     [ds for ds in self.windows_ds.datasets
+            #     if ds.description['subject'] in self.split_ids['train']])
+            # self.valid_ds = RelativePositioningDataset(
+            #     [ds for ds in self.windows_ds.datasets
+            #     if ds.description['subject'] in self.split_ids['valid']])
+
+            # use all datasets for training
+            self.train_ds = RelativePositioningDataset(self.windows_ds.datasets)
+            self.valid_ds = RelativePositioningDataset(self.windows_ds.datasets)
             self.valid_ds.return_pair = False
         elif stage == 'test':
             self.test_ds = RelativePositioningDataset(
@@ -133,10 +137,17 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
             self.test_ds.return_pair = False
 
     def train_dataloader(self):
-        n_examples_train = self.n_samples_per_dataset * len(self.train_ds.datasets)
-        train_sampler = DistributedRelativePositioningSampler(
-            self.train_ds.get_metadata(), tau_pos=self.tau_pos, tau_neg=self.tau_neg,
-            n_examples=n_examples_train, same_rec_neg=self.same_rec_neg, random_state=self.random_state)
+        is_distributed = dist.is_available() and dist.is_initialized()
+        if is_distributed:
+            train_sampler = DistributedRelativePositioningSampler(
+                self.train_ds.get_metadata(), tau_pos=self.tau_pos, tau_neg=self.tau_neg, 
+                n_samples_per_dataset=self.n_samples_per_dataset, same_rec_neg=self.same_rec_neg, random_state=self.random_state)
+        else:
+            n_examples_train = self.n_samples_per_dataset * len(self.train_ds.datasets)
+            print('Number of training examples:', n_examples_train)
+            train_sampler = RelativePositioningSampler(
+                self.train_ds.get_metadata(), tau_pos=self.tau_pos, tau_neg=self.tau_neg,
+                n_examples=n_examples_train, same_rec_neg=self.same_rec_neg, random_state=self.random_state) 
         return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
 
     def val_dataloader(self):
@@ -153,8 +164,8 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         pass
 
     def configure_optimizers(self):
-            optimizer = optim.Adam(self.parameters(), lr=1e-3)
-            return optimizer 
+        optimizer = optim.Adam(self.parameters(), lr=1e-3)
+        return optimizer 
 
 
 class DistributedRecordingSampler(DistributedSampler):
@@ -214,7 +225,9 @@ class DistributedRecordingSampler(DistributedSampler):
         if not dist.is_available():
             raise RuntimeError("Requires distributed package to be available")
         rank = dist.get_rank()
+        # send information to DistributedSampler parent to handle data splitting among workers
         super().__init__(self.info, num_replicas, rank, shuffle, random_state, drop_last)
+        # super iter should contain only indices of datasets specific to the current process
         self._iterator = list(super().__iter__())
 
     def _init_info(self, metadata, required_keys=None):
@@ -255,6 +268,8 @@ class DistributedRecordingSampler(DistributedSampler):
 
     def sample_recording(self):
         """Return a random recording index.
+        self._iterator contains indices of datasets specific to the current process
+        determined by the DistributedSampler
         """
         # XXX docstring missing
         return self.rng.choice(self._iterator)
@@ -306,19 +321,20 @@ class DistributedRelativePositioningSampler(DistributedRecordingSampler):
            signals with self-supervised learning.
            arXiv preprint arXiv:2007.16104.
     """
-    def __init__(self, metadata, tau_pos, tau_neg, n_examples, tau_max=None,
-                 same_rec_neg=True, random_state=None, shuffle=True):
+    def __init__(self, metadata, tau_pos, tau_neg, n_samples_per_dataset, 
+                 tau_max=None, same_rec_neg=True, random_state=None, shuffle=True):
         super().__init__(metadata, random_state=random_state, shuffle=shuffle)
-
         self.tau_pos = tau_pos
         self.tau_neg = tau_neg
         self.tau_max = np.inf if tau_max is None else tau_max
-        self.n_examples = n_examples
         self.same_rec_neg = same_rec_neg
-
         if not same_rec_neg and self.n_recordings < 2:
             raise ValueError('More than one recording must be available when '
                              'using across-recording negative sampling.')
+
+        self.n_examples = n_samples_per_dataset * len(self._iterator)
+        print(f"rank {dist.get_rank()} - Number of datasets:", len(self._iterator))
+        print(f"rank {dist.get_rank()} - Number of samples:", self.n_examples) 
 
     def _sample_pair(self):
         """Sample a pair of two windows.
@@ -432,7 +448,7 @@ class HBNDataset(BaseConcatDataset):
         dataset_kwargs: dict[str, Any] | None = None,
         dataset_load_kwargs: dict[str, Any] | None = None,
     ):
-        self.bids_dataset = BIDSDataset(data_dir=f'{data_path}/{dataset_name}', dataset=dataset_name)
+        self.bids_dataset = BIDSDataset(data_dir=data_path, dataset=dataset_name)
         subject_df = self.bids_dataset.subjects_metadata
         def parseBIDSfile(f):
             raw = mne.io.read_raw_eeglab(f, preload=preload)

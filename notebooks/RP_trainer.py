@@ -1,7 +1,8 @@
+import sys
+sys.path.append("/ceph/eeg-ssl")
 from libs.ssl_data import RelativePositioningHBNDataModule
 from libs.ssl_model import LitSSL
 from lightning.pytorch.cli import LightningCLI
-import os
 
 
 def main():
