@@ -1,7 +1,8 @@
 apiVersion: v1
 kind: Pod
 metadata:
-        name: eeg-ssl
+        # name: eeg-ssl-interactive
+        name: eeg-ssl-jupyter
 spec:
         restartPolicy: Never
         volumes:
@@ -11,6 +12,9 @@ spec:
                  hostPath:
                         path: /home/dtyoung
                         type: Directory
+               - name: ramdisk1
+                 emptyDir:
+                     medium: Memory
         containers:
                 - name: eeg-ssl-container
                   image: dtyoung/eeg-ssl:voyager
@@ -20,15 +24,17 @@ spec:
                            name: scratch
                          - mountPath: /ceph
                            name: ceph
+                         - mountPath: /dev/shm
+                           name: ramdisk1
                   resources:
                          limits:
-                                memory: 128G
-                                cpu: 32
+                                memory: 409G
+                                cpu: 86
                                 habana.ai/gaudi: 8
                                 hugepages-2Mi: 95000Mi
                          requests:
-                                memory: 128G
-                                cpu: 32
+                                memory: 409G
+                                cpu: 86
                                 habana.ai/gaudi: 8
                                 hugepages-2Mi: 95000Mi
                   env:
@@ -37,8 +43,6 @@ spec:
                     - name: output
                       value: "/ceph/results/stable_diffusion/inference_from_trained_habana"
                   command: ["/bin/sh", "-c"]
-                  # Just spin & wait forever
-                  command: [ "/bin/bash", "-c"]
                   # args: [ "while true; do sleep 30; done;" ]
                   args:
                   - >-

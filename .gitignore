@@ -10,5 +10,7 @@ notebooks/data/
 notebooks/eeg-ssl-voyager/
 **/lightning_logs/
 **/data/
+**/.ipynb_checkpoints/
+**/checkpoints/
 data/
 .env
