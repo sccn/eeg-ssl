@@ -1,0 +1,42 @@
+# Base image
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHON_VERSION=3.10
+ENV PYTORCH_VERSION=2.2.0
+ENV CUDA_VERSION=11.8
+
+# Install dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python${PYTHON_VERSION} \
+    python3-pip \
+    curl \
+    wget \
+    git \
+    && \
+    rm -rf /var/lib/apt/lists/* 
+
+RUN pip3 install --no-cache-dir \
+    torch \
+    torchvision \
+    torchaudio \
+    --extra-index-url https://download.pytorch.org/whl/cu118 \
+    && pip3 install numpy==1.26.4 \
+    git+https://github.com/dungscout96/mne-python.git \
+    braindecode \
+    tensorboard \
+    lightning==2.5.0 \
+    "lightning[pytorch-extra]" \
+    torchmetrics==1.6.1 \
+    wandb
+
+# Set working directory
+WORKDIR /app
+
+# Copy your application files
+COPY . /app/
+
+# Run hl-smi as an initial command and specify the script
+CMD ["sh", "-c"]
