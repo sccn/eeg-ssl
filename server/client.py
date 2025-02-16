@@ -23,7 +23,9 @@ with open('input.json', 'w') as f:
 with open('input.json', 'r') as f:
     input_data = json.load(f)
 
-response = requests.post("http://127.0.0.1:8000/predict", json=input_data)
+# url = "http://127.0.0.1:8000/predict"
+url = "https://8000-dep-01jm7yhdkfzc6p2fs2n4zj9m9y-d.cloudspaces.litng.ai/predict"
+response = requests.post(url, json=input_data)
 print(f"Status: {response.status_code}\nResponse:\n {response.text}")
 # save response to a json file
 with open('output.json', 'w') as f:
