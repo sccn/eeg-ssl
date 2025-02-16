@@ -30,7 +30,8 @@ RUN pip3 install --no-cache-dir \
     lightning==2.5.0 \
     "lightning[pytorch-extra]" \
     torchmetrics==1.6.1 \
-    wandb
+    wandb \
+    litserve
 
 # Set working directory
 WORKDIR /app
