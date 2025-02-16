@@ -34,6 +34,7 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         batch_size: int = 64, 
         num_workers=0,
         data_dir='data',
+        cache_dir=None,
         datasets:list[str]=None,
         overwrite_preprocessed=False,
     ):
@@ -47,11 +48,21 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         self.num_workers = num_workers
         self.random_state = random_state
         self.data_dir = data_dir
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
         self.overwrite_preprocessed = overwrite_preprocessed
         HBN_DSNUMBERS = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
         self.datasets = datasets if datasets is not None else HBN_DSNUMBERS
         print(f"Using datasets: {self.datasets}")
         self.save_hyperparameters()
+
+    def prepare_data(self):
+        # create preprocessed data if not exists
+        selected_tasks = ['RestingState']
+        for dsnumber in self.datasets:
+            savedir = f'{self.cache_dir}/{dsnumber}_preprocessed'
+            if not os.path.exists(savedir) or self.overwrite_preprocessed:
+                ds = HBNDataset(dsnumber, data_path=f"{self.data_dir}/{dsnumber}", tasks=selected_tasks, num_workers=-1, preload=False)
+                ds = self.preprocess(ds, savedir)
 
     def preprocess(self, ds, savedir):
         from sklearn.preprocessing import scale as standard_scale
@@ -74,17 +85,8 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
 
         return ds
 
-    def prepare_data(self):
-        # create preprocessed data if not exists
-        selected_tasks = ['RestingState']
-        for dsnumber in self.datasets:
-            savedir = f'{self.data_dir}/{dsnumber}_preprocessed'
-            if not os.path.exists(savedir) or self.overwrite_preprocessed:
-                ds = HBNDataset(dsnumber, data_path=f"{self.data_dir}/{dsnumber}", tasks=selected_tasks, num_workers=-1, preload=False)
-                ds = self.preprocess(ds, savedir)
-
     def setup(self, stage=None):
-        all_ds = BaseConcatDataset([load_concat_dataset(path=f'{self.data_dir}/{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets])
+        all_ds = BaseConcatDataset([load_concat_dataset(path=f'{self.cache_dir}/{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets])
         print(f"Loaded {len(all_ds.datasets)} datasets")
         # set desired label target
         target_name = 'age'
@@ -106,26 +108,7 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         self.tau_pos = int(self.sfreq * self.tau_pos_s)
         self.tau_neg = int(self.sfreq * self.tau_neg_s) if self.tau_neg_s else int(self.sfreq * 2 * self.tau_pos_s)
 
-        # subjects = np.unique(self.windows_ds.description['subject'])
-        # subj_train, subj_test = train_test_split(
-        #     subjects, test_size=0.4, random_state=self.random_state)
-        # subj_valid, subj_test = train_test_split(
-        #     subj_test, test_size=0.5, random_state=self.random_state)
-
-        # self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
-        # # get minimum number of samples per dataset
-        # _, counts = np.unique(subjects, return_counts=True)
-        # min_sample_per_dataset = np.min(counts)
-        # self.n_samples_per_dataset = min_sample_per_dataset # this number is a function of window_len_s and recording length
-
         if stage == 'fit':
-            # self.train_ds = RelativePositioningDataset(
-            #     [ds for ds in self.windows_ds.datasets
-            #     if ds.description['subject'] in self.split_ids['train']])
-            # self.valid_ds = RelativePositioningDataset(
-            #     [ds for ds in self.windows_ds.datasets
-            #     if ds.description['subject'] in self.split_ids['valid']])
-
             # use all datasets for training
             self.train_ds = RelativePositioningDataset(self.windows_ds.datasets)
             self.valid_ds = RelativePositioningDataset(self.windows_ds.datasets)
