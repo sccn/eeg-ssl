@@ -13,5 +13,8 @@ RUN pip3 install --no-cache-dir \
     wandb \
     litserve
 
+COPY . /app
+COPY libs /app/libs
+
 # Run hl-smi as an initial command and specify the script
-CMD ["sh", "-c"]
+CMD ["hl-smi"]

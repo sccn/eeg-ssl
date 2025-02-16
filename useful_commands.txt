@@ -2,3 +2,8 @@
 `python RP_trainer.py fit --trainer.logger False --trainer.max_epochs 1 --trainer.devices 1 --data.datasets [ds005505,ds005507,ds005508,ds005509,ds005510,ds005512] --data.n_samples_per_dataset 250 --data.batch_size 128 --trainer.check_val_every_n_epoch 3  --model.encoder VGGSSL --data.num_workers 10`
 - GPU:
 `docker run  --runtime=nvidia --gpus all -it -v .:/eeg-ssl -w /eeg-ssl dtyoung/eeg-ssl:gpu python3 main.py fit --trainer.logger False --trainer.max_epochs 2 --data.datasets [ds005510] --data.n_samples_per_dataset 250 --data.batch_size 64 --trainer.check_val_every_n_epoch 3 --model.encoder VGGSSL`
+- serve:
+```
+cd */eeg-ssl # must be at the top directory
+docker build -t dtyoung/eeg-ssl:serve -f server/Dockerfile .
+```
