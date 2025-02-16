@@ -14,3 +14,4 @@ notebooks/eeg-ssl-voyager/
 **/checkpoints/
 data/
 .env
+server/*.json
