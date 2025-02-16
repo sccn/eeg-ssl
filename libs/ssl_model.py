@@ -29,7 +29,6 @@ class LitSSL(L.LightningModule):
             projection_layer = nn.Identity()
             
         self.embedder = nn.Sequential(
-            self.encoder,
             projection_layer,
             nn.Dropout(dropout),
             nn.Linear(encoder_expected_emb_size, emb_size),
@@ -41,7 +40,7 @@ class LitSSL(L.LightningModule):
         self.rankme = RankMe()
         
     def embed(self, x):
-        return self.embedder(x)
+        return self.embedder(self.encoder(x))
 
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
