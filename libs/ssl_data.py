@@ -17,17 +17,14 @@ from braindecode.datautil import load_concat_dataset
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
+from .ssl_task import *
 
 import lightning as L
 
-class RelativePositioningHBNDataModule(L.LightningDataModule):
+class SSLHBNDataModule(L.LightningDataModule):
     def __init__(self, 
+        ssl_task: SSLTask = RelativePositioning,
         window_len_s=10, 
-        ssl_sampler: SSLTask = ,
-        # tau_pos_s=10, 
-        # tau_neg_s=None, 
-        # same_rec_neg=False, 
-        # n_samples_per_dataset=2000,
         random_state=9, 
         batch_size: int = 64, 
         num_workers=0,
@@ -37,11 +34,8 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
         overwrite_preprocessed=False,
     ):
         super().__init__()
+        self.ssl_task = ssl_task
         self.window_len_s = window_len_s
-        # self.tau_pos_s = tau_pos_s
-        # self.tau_neg_s = tau_neg_s
-        # self.same_rec_neg = same_rec_neg
-        # self.n_samples_per_dataset = n_samples_per_dataset
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.random_state = random_state
@@ -101,34 +95,30 @@ class RelativePositioningHBNDataModule(L.LightningDataModule):
             window_stride_samples=window_stride_samples, drop_last_window=True,
             preload=False)
 
-        self.n_channels, self.n_times = self.windows_ds[0][0].shape
-        self.sfreq = self.windows_ds.datasets[0].raw.info['sfreq']
-        self.tau_pos = int(self.sfreq * self.tau_pos_s)
-        self.tau_neg = int(self.sfreq * self.tau_neg_s) if self.tau_neg_s else int(self.sfreq * 2 * self.tau_pos_s)
+        # split into train/valid/test by subjects
+        # Note: right now ignore train split. Train on all subjects
+        subjects = np.unique(self.windows_ds.description['subject'])
+        subj_train, subj_test = train_test_split(
+            subjects, test_size=0.4, random_state=self.random_state)
+        subj_valid, subj_test = train_test_split(
+            subj_test, test_size=0.5, random_state=self.random_state)
+        self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
 
         if stage == 'fit':
             # use all datasets for training
-            self.train_ds = RelativePositioningDataset(self.windows_ds.datasets)
-            self.valid_ds = RelativePositioningDataset(self.windows_ds.datasets)
+            self.train_ds = self.ssl_task.dataset(self.windows_ds.datasets)
+            self.valid_ds = self.ssl_task.dataset(
+                [ds for ds in self.windows_ds.datasets
+                if ds.description['subject'] in self.split_ids['valid']])
             self.valid_ds.return_pair = False
         elif stage == 'test':
-            self.test_ds = RelativePositioningDataset(
+            self.test_ds = self.ssl_task.dataset(
                 [ds for ds in self.windows_ds.datasets
                 if ds.description['subject'] in self.split_ids['test']])
             self.test_ds.return_pair = False
 
     def train_dataloader(self):
-        is_distributed = dist.is_available() and dist.is_initialized()
-        if is_distributed:
-            train_sampler = DistributedRelativePositioningSampler(
-                self.train_ds.get_metadata(), tau_pos=self.tau_pos, tau_neg=self.tau_neg, 
-                n_samples_per_dataset=self.n_samples_per_dataset, same_rec_neg=self.same_rec_neg, random_state=self.random_state)
-        else:
-            n_examples_train = self.n_samples_per_dataset * len(self.train_ds.datasets)
-            print('Number of training examples:', n_examples_train)
-            train_sampler = RelativePositioningSampler(
-                self.train_ds.get_metadata(), tau_pos=self.tau_pos, tau_neg=self.tau_neg,
-                n_examples=n_examples_train, same_rec_neg=self.same_rec_neg, random_state=self.random_state) 
+        train_sampler = self.ssl_task.sampler(self.train_ds)
         return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
 
     def val_dataloader(self):

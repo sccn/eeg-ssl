@@ -1,11 +1,11 @@
 from braindecode.datasets import BaseDataset, BaseConcatDataset
-from braindecode.samplers import RelativePositioningSampler
-from torch.utils.data.distributed import DistributedSampler
+from braindecode.samplers import RelativePositioningSampler #, DistributedRelativePositioningSampler
 import torch.distributed as dist
-from sklearn.utils import check_random_state
-from typing import Optional
+from torch.utils.data.distributed import DistributedSampler
 import numpy as np
 from typing import List
+import torch
+from sklearn.utils import check_random_state
 
 class DistributedRecordingSampler(DistributedSampler):
     """Base sampler simplifying sampling from recordings in distributed setting.
@@ -27,18 +27,6 @@ class DistributedRecordingSampler(DistributedSampler):
 
     random_state : np.RandomState | int | None
         Random state.
-    num_replicas (int, optional): Number of processes participating in
-        distributed training. By default, :attr:`world_size` is retrieved from the
-        current distributed group.
-    rank (int, optional): Rank of the current process within :attr:`num_replicas`.
-        By default, :attr:`rank` is retrieved from the current distributed
-        group.
-    shuffle (bool, optional): If ``True`` (default), sampler will shuffle the
-        indices.
-    drop_last (bool, optional): if ``True``, then the sampler will drop the
-        tail of the data to make it evenly divisible across the number of
-        replicas. If ``False``, the sampler will add extra indices to make
-        the data evenly divisible across the replicas. Default: ``False``.
 
     Attributes
     ----------
@@ -51,22 +39,15 @@ class DistributedRecordingSampler(DistributedSampler):
     """
     def __init__(
             self, 
-            metadata, 
+            metadata,
             random_state=None,
-            num_replicas: Optional[int] = None,
-            rank: Optional[int] = None,
-            shuffle: bool = True,
-            drop_last: bool = False
     ):
         self.metadata = metadata
         self.info = self._init_info(metadata)
         self.rng = check_random_state(random_state)
-        if not dist.is_available():
-            raise RuntimeError("Requires distributed package to be available")
-        rank = dist.get_rank()
         # send information to DistributedSampler parent to handle data splitting among workers
-        super().__init__(self.info, num_replicas, rank, shuffle, random_state, drop_last)
-        # super iter should contain only indices of datasets specific to the current process
+        super().__init__(self.info, random_state)
+         # super iter should contain only indices of datasets specific to the current process
         self._iterator = list(super().__iter__())
 
     def _init_info(self, metadata, required_keys=None):
@@ -82,25 +63,25 @@ class DistributedRecordingSampler(DistributedSampler):
         -------
             See class attributes.
         """
-        keys = [k for k in ['subject', 'session', 'run']
-                if k in self.metadata.columns]
+        keys = [k for k in ["subject", "session", "run"] if k in self.metadata.columns]
         if not keys:
             raise ValueError(
-                'metadata must contain at least one of the following columns: '
-                'subject, session or run.')
+                "metadata must contain at least one of the following columns: "
+                "subject, session or run."
+            )
 
         if required_keys is not None:
-            missing_keys = [
-                k for k in required_keys if k not in self.metadata.columns]
+            missing_keys = [k for k in required_keys if k not in self.metadata.columns]
             if len(missing_keys) > 0:
-                raise ValueError(
-                    f'Columns {missing_keys} were not found in metadata.')
+                raise ValueError(f"Columns {missing_keys} were not found in metadata.")
             keys += required_keys
 
-        metadata = metadata.reset_index().rename(
-            columns={'index': 'window_index'})
-        info = metadata.reset_index().groupby(keys)[
-            ['index', 'i_start_in_trial']].agg(['unique'])
+        metadata = metadata.reset_index().rename(columns={"index": "window_index"})
+        info = (
+            metadata.reset_index()
+            .groupby(keys)[["index", "i_start_in_trial"]]
+            .agg(["unique"])
+        )
         info.columns = info.columns.get_level_values(0)
 
         return info
@@ -122,60 +103,24 @@ class DistributedRecordingSampler(DistributedSampler):
         win_ind = self.rng.choice(self.info.iloc[rec_ind]['index'])
         return win_ind, rec_ind
 
+    def sample_recording(self):
+        """Return a random recording index."""
+        # XXX docstring missing
+        return self.rng.choice(self.n_recordings)
+
+    def sample_window(self, rec_ind=None):
+        """Return a specific window."""
+        # XXX docstring missing
+        if rec_ind is None:
+            rec_ind = self.sample_recording()
+        win_ind = self.rng.choice(self.info.iloc[rec_ind]["index"])
+        return win_ind, rec_ind
+
     @property
     def n_recordings(self):
-        return self.info.shape[0]
+        return self.__len__()
 
-class SSLTask():
-    def __init__(self):
-        pass
-    
-class RelativePositioning(SSLTask):
-    """Sampler and Dataset object for relative positioning task from [Banville2020]_.
-
-    Sample examples as tuples of two window indices, with a label indicating
-    whether the windows are close or far, as defined by tau_pos and tau_neg.
-
-    Parameters
-    ----------
-    metadata : pd.DataFrame
-        See RecordingSampler.
-    tau_pos : int
-        Size of the positive context, in samples. A positive pair contains two
-        windows x1 and x2 which are separated by at most `tau_pos` samples.
-    tau_neg : int
-        Size of the negative context, in samples. A negative pair contains two
-        windows x1 and x2 which are separated by at least `tau_neg` samples and
-        at most `tau_max` samples. Ignored if `same_rec_neg` is False.
-    n_examples : int
-        Number of pairs to extract.
-    tau_max : int | None
-        See `tau_neg`.
-    same_rec_neg : bool
-        If True, sample negative pairs from within the same recording. If
-        False, sample negative pairs from two different recordings.
-    random_state : None | np.RandomState | int
-        Random state.
-
-    References
-    ----------
-    .. [Banville2020] Banville, H., Chehab, O., Hyvärinen, A., Engemann, D. A.,
-           & Gramfort, A. (2020). Uncovering the structure of clinical EEG
-           signals with self-supervised learning.
-           arXiv preprint arXiv:2007.16104.
-    """
-    def __init__(self, datasets: List[BaseConcatDataset], tau_pos, tau_neg, n_samples_per_dataset, 
-                 tau_max=None, same_rec_neg=True, random_state=None):
-        if not dist.is_initialized():
-            sampler = DistributedRelativePositioningSampler(datasets, tau_pos, tau_neg, n_samples_per_dataset, tau_max, same_rec_neg, random_state=random_state)
-        else:
-            sampler = RelativePositioningSampler(tau_pos, tau_neg, n_samples_per_dataset, tau_max, same_rec_neg)
-        
-        self.sampler = sampler
-        self.dataset = RelativePositioningDataset(datasets)
-
-        
-class DistributedRelativePositioningSampler(DistributedSampler):
+class DistributedRelativePositioningSampler(DistributedRecordingSampler):
     """Sample examples for the relative positioning task from [Banville2020]_.
 
     Sample examples as tuples of two window indices, with a label indicating
@@ -209,9 +154,9 @@ class DistributedRelativePositioningSampler(DistributedSampler):
            signals with self-supervised learning.
            arXiv preprint arXiv:2007.16104.
     """
-    def __init__(self, datasets: List[BaseConcatDataset], tau_pos, tau_neg, n_samples_per_dataset, 
-                 tau_max=None, same_rec_neg=True, random_state=None):
-        super().__init__(datasets, random_state=random_state)
+    def __init__(self, metadata, tau_pos, tau_neg, n_samples_per_dataset, 
+                 tau_max=None, same_rec_neg=True, random_state=None, shuffle=True):
+        super().__init__(metadata, random_state=random_state, shuffle=shuffle)
         self.tau_pos = tau_pos
         self.tau_neg = tau_neg
         self.tau_max = np.inf if tau_max is None else tau_max
@@ -282,28 +227,94 @@ class DistributedRelativePositioningSampler(DistributedSampler):
     def __len__(self):
         return self.n_examples
 
-class RelativePositioningDataset(BaseConcatDataset):
-    """BaseConcatDataset with __getitem__ that expects 2 indices and a target.
+class SSLTask():
+    def __init__(self):
+        pass
+    
+    def dataset(self, datasets: torch.utils.data.Dataset):
+        return datasets
+    
+    def sampler(self, dataset: BaseConcatDataset):
+        return torch.utils.data.sampler.Sampler(dataset)
+
+class RelativePositioning(SSLTask):
+    """Sampler and Dataset object for relative positioning task from [Banville2020]_.
+
+    Sample examples as tuples of two window indices, with a label indicating
+    whether the windows are close or far, as defined by tau_pos and tau_neg.
+
+    Parameters
+    ----------
+    metadata : pd.DataFrame
+        See RecordingSampler.
+    tau_pos_s : int
+        Size of the positive context, in seconds. A positive pair contains two
+        windows x1 and x2 which are separated by at most `tau_pos` samples.
+    tau_neg_s : int
+        Size of the negative context, in seconds. A negative pair contains two
+        windows x1 and x2 which are separated by at least `tau_neg` samples and
+        at most `tau_max` samples. Ignored if `same_rec_neg` is False.
+    n_examples : int
+        Number of pairs to extract.
+    tau_max : int | None
+        See `tau_neg`.
+    same_rec_neg : bool
+        If True, sample negative pairs from within the same recording. If
+        False, sample negative pairs from two different recordings.
+    random_state : None | np.RandomState | int
+        Random state.
+
+    References
+    ----------
+    .. [Banville2020] Banville, H., Chehab, O., Hyvärinen, A., Engemann, D. A.,
+           & Gramfort, A. (2020). Uncovering the structure of clinical EEG
+           signals with self-supervised learning.
+           arXiv preprint arXiv:2007.16104.
     """
-
-    def __init__(self, list_of_ds):
-        super().__init__(list_of_ds)
-        self.return_pair = True
-
-    def __getitem__(self, index):
-        if self.return_pair:
-            ind1, ind2, y = index
-            return (super().__getitem__(ind1)[0],
-                    super().__getitem__(ind2)[0]), y
+    def __init__(self, tau_pos_s, tau_neg_s, n_samples_per_dataset, 
+                 tau_max=None, same_rec_neg=True, random_state=None):
+        super().__init__()
+        # set all arguments except datasets as attributes
+        self.tau_pos_s = tau_pos_s
+        self.tau_neg_s = tau_neg_s if tau_neg_s else 2 * tau_pos_s
+        self.n_samples_per_dataset = n_samples_per_dataset
+        self.tau_max = tau_max
+        self.same_rec_neg = same_rec_neg
+        self.random_state = random_state
+        
+    def dataset(self, datasets: List[BaseConcatDataset]):
+        return RelativePositioning.RelativePositioningDataset(datasets)
+    
+    def sampler(self, dataset: BaseConcatDataset):
+        sfreq = dataset.datasets[0].raw.info['sfreq']
+        tau_pos = int(sfreq * self.tau_pos_s)
+        tau_neg = int(sfreq * self.tau_neg_s)
+        if dist.is_initialized():
+            sampler = DistributedRelativePositioningSampler(dataset.get_metadata(), tau_pos, tau_neg, self.n_samples_per_dataset, self.tau_max, self.same_rec_neg, random_state=self.random_state)
         else:
-            return super().__getitem__(index)
+            sampler = RelativePositioningSampler(dataset.get_metadata(), tau_pos, tau_neg, self.n_samples_per_dataset, self.tau_max, self.same_rec_neg, random_state=self.random_state)
 
-    @property
-    def return_pair(self):
-        return self._return_pair
+        return sampler
 
-    @return_pair.setter
-    def return_pair(self, value):
-        self._return_pair = value
+    class RelativePositioningDataset(BaseConcatDataset):
+        """BaseConcatDataset with __getitem__ that expects 2 indices and a target.
+        """
+        def __init__(self, list_of_ds):
+            super().__init__(list_of_ds)
+            self.return_pair = True
 
+        def __getitem__(self, index):
+            if self.return_pair:
+                ind1, ind2, y = index
+                return (super().__getitem__(ind1)[0],
+                        super().__getitem__(ind2)[0]), y
+            else:
+                return super().__getitem__(index)
 
+        @property
+        def return_pair(self):
+            return self._return_pair
+
+        @return_pair.setter
+        def return_pair(self, value):
+            self._return_pair = value
