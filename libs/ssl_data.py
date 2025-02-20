@@ -172,6 +172,7 @@ class HBNDataset(BaseConcatDataset):
         dataset_kwargs: dict[str, Any] | None = None,
         dataset_load_kwargs: dict[str, Any] | None = None,
     ):
+        print("BIDS dir path", f'{data_path}/{dataset_name}')
         self.bids_dataset = BIDSDataset(data_dir=data_path, dataset=dataset_name)
         subject_df = self.bids_dataset.subjects_metadata
         def parseBIDSfile(f):
