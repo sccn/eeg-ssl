@@ -1,0 +1,77 @@
+# lightning.pytorch==2.5.0
+seed_everything: 0
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: auto
+  num_nodes: 1
+  precision: null
+  logger: null
+  callbacks: null
+  fast_dev_run: false
+  max_epochs: 1
+  min_epochs: null
+  max_steps: -1
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0
+  val_check_interval: null
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: null
+  log_every_n_steps: null
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+model:
+  class_path: libs.ssl_task.RelativePositioning.RelativePositioningLit
+  init_args:
+    encoder:
+      class_path: libs.ssl_model.VGGSSL
+    encoder_emb_size: 1024
+    emb_size: 100
+    # evaluators:
+    # - RankMe
+    dropout: 0.5
+data:
+  ssl_task:
+      class_path: libs.ssl_task.RelativePositioning
+      init_args:
+        tau_pos_s: 10
+        tau_neg_s: null
+        same_rec_neg: false
+        n_samples_per_dataset: 250
+  window_len_s: 10
+  random_state: 9
+  batch_size: 64
+  num_workers: 0
+  data_dir: /mnt/nemar/openneuro
+  cache_dir: data
+  datasets:
+  - ds005505
+  - ds005507
+  - ds005508
+  - ds005509
+  - ds005510
+  - ds005512
+  overwrite_preprocessed: false
+optimizer: null
+lr_scheduler: null
+ckpt_path: null

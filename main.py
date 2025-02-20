@@ -1,5 +1,5 @@
 from libs.ssl_data import SSLHBNDataModule
-from libs.ssl_model import LitSSL, VGGSSL
+from libs.ssl_utils import LitSSL
 from lightning.pytorch.cli import LightningCLI
 
 def main():
