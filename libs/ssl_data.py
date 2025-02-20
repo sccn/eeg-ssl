@@ -55,31 +55,9 @@ class SSLHBNDataModule(L.LightningDataModule):
             if not os.path.exists(savedir) or self.overwrite_preprocessed:
                 ds = HBNDataset(dsnumber, data_path=f"{self.data_dir}/{dsnumber}", tasks=selected_tasks, num_workers=-1, preload=False)
                 ds = self.preprocess(ds, savedir)
-
-    def preprocess(self, ds, savedir):
-        from sklearn.preprocessing import scale as standard_scale
-        os.makedirs(savedir, exist_ok=True)
-
-        sampling_rate = 250 # resample to follow the tutorial sampling rate
-        high_cut_hz = 59
-        # Factor to convert from V to uV
-        factor = 1e6
-        preprocessors = [
-            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
-            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
-            Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
-            Preprocessor('resample', sfreq=sampling_rate),
-            Preprocessor('notch_filter', freqs=(60, 120)),
-            Preprocessor(standard_scale, channel_wise=True),
-        ]
-        # Transform the data
-        preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=-1)
-
-        return ds
-
-    def setup(self, stage=None):
+        
         all_ds = BaseConcatDataset([load_concat_dataset(path=f'{self.cache_dir}/{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets])
-        print(f"Loaded {len(all_ds.datasets)} datasets")
+        print(f'Loaded {len(all_ds.datasets)} datasets')
         # set desired label target
         target_name = 'age'
         for ds in all_ds.datasets:
@@ -104,6 +82,29 @@ class SSLHBNDataModule(L.LightningDataModule):
             subj_test, test_size=0.5, random_state=self.random_state)
         self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
 
+
+    def preprocess(self, ds, savedir):
+        from sklearn.preprocessing import scale as standard_scale
+        os.makedirs(savedir, exist_ok=True)
+
+        sampling_rate = 250 # resample to follow the tutorial sampling rate
+        high_cut_hz = 59
+        # Factor to convert from V to uV
+        factor = 1e6
+        preprocessors = [
+            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
+            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+            Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
+            Preprocessor('resample', sfreq=sampling_rate),
+            Preprocessor('notch_filter', freqs=(60, 120)),
+            Preprocessor(standard_scale, channel_wise=True),
+        ]
+        # Transform the data
+        preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=-1)
+
+        return ds
+
+    def setup(self, stage=None):
         if stage == 'fit':
             # use all datasets for training
             self.train_ds = self.ssl_task.dataset(self.windows_ds.datasets)

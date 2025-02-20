@@ -57,7 +57,7 @@ data:
         tau_pos_s: 10
         tau_neg_s: null
         same_rec_neg: false
-        n_samples_per_dataset: 250
+        n_samples_per_dataset: 1
   window_len_s: 10
   random_state: 9
   batch_size: 64
