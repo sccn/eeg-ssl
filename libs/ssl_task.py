@@ -407,11 +407,10 @@ class VICReg(SSLTask):
             # Positive example
             mask = (ts >= ts1 - self.tau_pos) & (ts <= ts1 + self.tau_pos)
 
-            if win_ind2 is None:
-                mask[ts == ts1] = False  # same window cannot be sampled twice
-                if sum(mask) == 0:
-                    raise NotImplementedError
-                win_ind2 = self.rng.choice(self.info.iloc[rec_ind1]["index"][mask])
+            mask[ts == ts1] = False  # same window cannot be sampled twice
+            if sum(mask) == 0:
+                raise NotImplementedError
+            win_ind2 = self.rng.choice(self.info.iloc[rec_ind1]["index"][mask])
 
             return win_ind1, win_ind2
 
