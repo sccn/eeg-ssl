@@ -1,0 +1,9 @@
+numpy==1.26.4
+git+https://github.com/dungscout96/mne-python.git
+braindecode
+tensorboard
+lightning==2.5.0
+lightning[pytorch-extra]
+torchmetrics==1.6.1
+wandb
+litserve

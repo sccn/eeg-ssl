@@ -2,9 +2,71 @@ import torch
 import torchvision.models as torchmodels
 import torch.nn as nn
 import torch.nn.functional as F
-from abc import ABC, abstractmethod
+from torch import nn
 from torch.nn.parameter import Parameter
 import random
+
+class VGGSSL(nn.Module):
+    def __init__(self):
+        super().__init__()
+        inchans = 129
+        out_emb = 1024
+        vgg = self.create_vgg_rescaled()
+        self.model = nn.Sequential(
+            vgg.features, 
+            nn.Conv2d(64, 1, 1),
+            nn.AdaptiveAvgPool2d(32),
+            nn.Flatten(),
+        )
+
+    def forward(self, x):
+        if len(x.shape) == 3:
+            x = x.unsqueeze(1)
+        z = self.model(x)
+        return z
+        
+    def create_vgg_rescaled(self, subsample=4, feature='raw', weights='DEFAULT'):
+        tmp = torchmodels.vgg16(weights=weights)
+        tmp.features = tmp.features[0:17]
+        vgg16_rescaled = nn.Sequential()
+        modules = []
+        
+        if feature == 'raw':
+            first_in_channels = 1
+            first_in_features = 6144
+        else:
+            first_in_channels = 3
+            first_in_features = 576
+            
+        for layer in tmp.features.children():
+            if isinstance(layer, nn.Conv2d):
+                if layer.in_channels == 3:
+                    in_channels = first_in_channels
+                else:
+                    in_channels = int(layer.in_channels/subsample)
+                out_channels = int(layer.out_channels/subsample)
+                modules.append(nn.Conv2d(in_channels, out_channels, layer.kernel_size, layer.stride, layer.padding))
+            else:
+                modules.append(layer)
+        vgg16_rescaled.add_module('features',nn.Sequential(*modules))
+        vgg16_rescaled.add_module('flatten', nn.Flatten())
+
+        modules = []
+        for layer in tmp.classifier.children():
+            if isinstance(layer, nn.Linear):
+                if layer.in_features == 25088:
+                    in_features = first_in_features
+                else:
+                    in_features = int(layer.in_features/subsample) 
+                if layer.out_features == 1000:
+                    out_features = 2
+                else:
+                    out_features = int(layer.out_features/subsample) 
+                modules.append(nn.Linear(in_features, out_features))
+            else:
+                modules.append(layer)
+        vgg16_rescaled.add_module('classifier', nn.Sequential(*modules))
+        return vgg16_rescaled
 
 class SpatialAttention(nn.Module):
     def __init__(self, out_channels=129, K=32):
@@ -144,33 +206,6 @@ class Wav2Vec2(nn.Module):
     x = self.context_encoder(x)
     return x
 
-
-class SSLModel(ABC, nn.Module):
-    def __init__(self, model_params=None):
-        super().__init__()
-        default_params = {
-            'task': 'RP',
-            'weights': 'DEFAULT'
-        }
-
-        if model_params:
-            default_params.update(model_params)
-        for k,v in default_params.items():
-            setattr(self, k, v)
-
-        self.model: nn.Module = None
-        self.projection: nn.Linear = None
-
-    def data_augment(self, x):
-        return x
-
-    @abstractmethod
-    def forward(self, x):
-        x = self.data_augment(x)
-        x = self.model(x)
-        x = self.projection(x)
-        return x
-
 class Wav2VecBrainModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -306,65 +341,3 @@ class LacunaModel(nn.Module):
         x = self.context_encoder(x)
         return x
 
-class VGGSSL(SSLModel):
-    def __init__(self, model_params=None):
-        super().__init__(model_params)
-        vgg = self.create_vgg_rescaled(weights=self.weights)
-        self.encoder = nn.Sequential(vgg.features, nn.Conv2d(64, 1, 1))#, vgg.flatten)
-        
-    def create_vgg_rescaled(self, subsample=4, feature='raw', weights='DEFAULT'):
-        tmp = torchmodels.vgg16(weights=weights)
-        tmp.features = tmp.features[0:17]
-        vgg16_rescaled = nn.Sequential()
-        modules = []
-        
-        if feature == 'raw':
-            first_in_channels = 1
-            first_in_features = 6144
-        else:
-            first_in_channels = 3
-            first_in_features = 576
-            
-        for layer in tmp.features.children():
-            if isinstance(layer, nn.Conv2d):
-                if layer.in_channels == 3:
-                    in_channels = first_in_channels
-                else:
-                    in_channels = int(layer.in_channels/subsample)
-                out_channels = int(layer.out_channels/subsample)
-                modules.append(nn.Conv2d(in_channels, out_channels, layer.kernel_size, layer.stride, layer.padding))
-            else:
-                modules.append(layer)
-        vgg16_rescaled.add_module('features',nn.Sequential(*modules))
-        vgg16_rescaled.add_module('flatten', nn.Flatten())
-
-        modules = []
-        for layer in tmp.classifier.children():
-            if isinstance(layer, nn.Linear):
-                if layer.in_features == 25088:
-                    in_features = first_in_features
-                else:
-                    in_features = int(layer.in_features/subsample) 
-                if layer.out_features == 1000:
-                    out_features = 2
-                else:
-                    out_features = int(layer.out_features/subsample) 
-                modules.append(nn.Linear(in_features, out_features))
-            else:
-                modules.append(layer)
-        vgg16_rescaled.add_module('classifier', nn.Sequential(*modules))
-        return vgg16_rescaled
-
-    def forward(self, x):
-        '''
-        @param x: (batch_size, channel, time)
-        '''
-        if len(x.shape) == 3:
-            x = x.unsqueeze(1)
-        return self.encode(x)
-    
-    def encode(self, x):
-        return self.encoder(x)
-
-    def aggregate(self, x):
-        return super().aggregate(x)

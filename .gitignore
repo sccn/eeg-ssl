@@ -7,6 +7,11 @@ signalstore/
 aws/
 notebooks/test/
 notebooks/data/
-notebooks/lightning_logs/
+notebooks/eeg-ssl-voyager/
+**/lightning_logs/
+**/data/
+**/.ipynb_checkpoints/
+**/checkpoints/
 data/
 .env
+server/*.json

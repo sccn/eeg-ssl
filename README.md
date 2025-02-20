@@ -2,6 +2,7 @@
 Apply Self-supervised Learning on NEMAR and EEGDASH data
 
 ## Installation
+- Install our fork of mne-python for latest EEGLAB import behavior: `pip install git+https://github.com/dungscout96/mne-python.git`
 - Install PyTorch for your respective system: https://pytorch.org/get-started/locally/
 - Install braindecode: `pip install braindecode`
 
@@ -38,7 +39,7 @@ https://hal.science/hal-02361350
 On a machine with Nvidia GPU:
 
 ```
-docker run -it --runtime=nvidia --gpus all -v /mnt/nemar/child-mind-rest:/mnt/nemar/child-mind-rest -v .:/app dtyoung/eeg-ssl python main.py --nsubjects=30
+docker run -v $(pwd):/app --rm -it --runtime=nvidia --gpus all --entrypoint bash dtyoung/eeg-ssl:linux
 ```
 
 Here the path to the dataset is at `/mnt/nemar/child-mind-rest` and we assume that the command is run in the top-level directory of the cloned version of this repo.

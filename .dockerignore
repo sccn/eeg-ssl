@@ -1,9 +1,0 @@
-Dockerfile
-.git
-.gitignore
-notebooks
-tests
-runs
-checkpoints
-wandb
-README.md

@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Pod
+metadata:
+        # name: eeg-ssl-interactive
+        name: eeg-ssl-jupyter
+spec:
+        restartPolicy: Never
+        volumes:
+               - name: scratch
+                 emptyDir: {}
+               - name: ceph
+                 hostPath:
+                        path: /home/dtyoung
+                        type: Directory
+               - name: ramdisk1
+                 emptyDir:
+                     medium: Memory
+        containers:
+                - name: eeg-ssl-container
+                  image: dtyoung/eeg-ssl:voyager
+                  imagePullPolicy: Always
+                  volumeMounts:
+                         - mountPath: /scratch
+                           name: scratch
+                         - mountPath: /ceph
+                           name: ceph
+                         - mountPath: /dev/shm
+                           name: ramdisk1
+                  resources:
+                         limits:
+                                memory: 409G
+                                cpu: 86
+                                habana.ai/gaudi: 8
+                                hugepages-2Mi: 95000Mi
+                         requests:
+                                memory: 409G
+                                cpu: 86
+                                habana.ai/gaudi: 8
+                                hugepages-2Mi: 95000Mi
+                  env:
+                    - name: checkpt
+                      value: "/ceph/datasets/stable_diff/checkpoint_trained_habana"
+                    - name: output
+                      value: "/ceph/results/stable_diffusion/inference_from_trained_habana"
+                  command: ["/bin/sh", "-c"]
+                  # args: [ "while true; do sleep 30; done;" ]
+                  args:
+                  - >-
+                    pip install jupyterlab ;
+                    jupyter lab --allow-root
