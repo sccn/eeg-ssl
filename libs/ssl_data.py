@@ -17,6 +17,7 @@ from braindecode.datautil import load_concat_dataset
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
+import torch.distributed as dist
 from .ssl_task import *
 
 import lightning as L
@@ -118,7 +119,9 @@ class SSLHBNDataModule(L.LightningDataModule):
 
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)
-        print(f"Number of examples: {train_sampler.n_examples}")
+        if not dist.is_initialized():
+            print(f"Number of datasets: {len(self.train_ds.datasetes)}")
+            print(f"Number of examples: {train_sampler.n_examples}")
         return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
 
     def val_dataloader(self):
