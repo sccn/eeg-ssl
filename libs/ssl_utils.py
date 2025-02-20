@@ -35,31 +35,18 @@ class LitSSL(L.LightningModule):
         
         evaluators = ['RankMe']
         self.evaluators = [globals()[evaluator]() for evaluator in evaluators]
-        # self.rankme = RankMe()
         
     def embed(self, x):
         return self.embedder(self.encoder(x))
 
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
-        # # training_step defines the train loop.
-        # # it is independent of forward
-        # X, y = batch
-        # x1, x2 = X[0], X[1]
-        # z1, z2 = self.embed(x1), self.embed(x2)
-        # loss = self.loss(z1, z2, y, self.clf)
-        # # z = torch.abs(z1 - z2)
-        # # loss = nn.functional.binary_cross_entropy_with_logits(self.clf(z).flatten(), y)
-
-        # self.log("train_loss", loss)
-        # return loss
 
     def validation_step(self, batch, batch_idx):
         X, Y, _ = batch
         z = self.clf(self.embed(X))
         for evaluator in self.evaluators:
             evaluator.update(z)
-        # self.rankme.update(z)
         
     def test_step(self, batch, batch_idx):
         # this is the test loop
@@ -74,7 +61,6 @@ class LitSSL(L.LightningModule):
         # log epoch metric
         for evaluator in self.evaluators:
             self.log(f'val_{type(evaluator).__name__}', evaluator.compute(), sync_dist=True)
-        # self.log('val_rankme', self.rankme.compute(), sync_dist=True)
     
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=1e-3)
