@@ -43,3 +43,29 @@ docker run -v $(pwd):/app --rm -it --runtime=nvidia --gpus all --entrypoint bash
 ```
 
 Here the path to the dataset is at `/mnt/nemar/child-mind-rest` and we assume that the command is run in the top-level directory of the cloned version of this repo.
+
+## Voyager install
+
+-  Download BIDS data and put it in the data folder. If you are downloading ds005510 for example, make sure the data is in data/ds005505/ (example of command scp -r arno@login.expanse.sdsc.edu:/expanse/projects/nemar/openneuro/ds005505 eeg-ssl/notebooks/data/)
+  
+-  Edit the file "runs/config_RP.yaml" and change the list of datasets under "data" to the data that is available to you (for example "ds005505") change also the "data_dir" entry to "data"
+
+-  Edit the file "voyager.yaml" and change the "hostpath" to you home folder. Also uncomment the first metadata name "name: eeg-ssl-interactive" and comment the jupyter one. Uncomment the args parameter " [ "while true; do sleep 30; done;" ]" and comment the one that is active (could be multiple lines, for example 4 lines).
+
+-  Start Kubernete
+
+```
+module load kubernetes/voyager/1.21.14
+kubectl apply -f ./voyager.yaml
+kubectl describe pod eeg-ssl-interactive
+kubectl logs pod eeg-ssl-interactive
+kubectl exec -it eeg-ssl-interactive  -- /bin/bash
+```
+
+- Once on the Kubernete, run the program
+
+```
+python main.py fit --config runs/config_RP.yaml
+```
+
+- 
