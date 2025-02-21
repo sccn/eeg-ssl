@@ -46,7 +46,7 @@ Here the path to the dataset is at `/mnt/nemar/child-mind-rest` and we assume th
 
 ## Voyager install
 
--  Download BIDS data and put it in the data folder. If you are downloading ds005510 for example, make sure the data is in data/ds005505/ (example of command scp -r arno@login.expanse.sdsc.edu:/expanse/projects/nemar/openneuro/ds005505 eeg-ssl/notebooks/data/)
+-  Download BIDS data and put it in the data folder. If you are downloading ds005505 for example, make sure the data is in data/ds005505/ (example of command scp -r arno@login.expanse.sdsc.edu:/expanse/projects/nemar/openneuro/ds005505 eeg-ssl/notebooks/data/)
   
 -  Edit the file "runs/config_RP.yaml" and change the list of datasets under "data" to the data that is available to you (for example "ds005505") change also the "data_dir" entry to "data"
 
