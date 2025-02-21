@@ -120,7 +120,7 @@ class SSLHBNDataModule(L.LightningDataModule):
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)
         if not dist.is_initialized():
-            print(f"Number of datasets: {len(self.train_ds.datasetes)}")
+            print(f"Number of datasets: {len(self.train_ds.datasets)}")
             print(f"Number of examples: {train_sampler.n_examples}")
         return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
 

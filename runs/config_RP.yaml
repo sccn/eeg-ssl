@@ -6,7 +6,41 @@ trainer:
   devices: auto
   num_nodes: 1
   precision: null
-  logger: null
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      name: null
+      save_dir: .
+      version: null
+      offline: false
+      dir: null
+      id: null
+      anonymous: null
+      project: eeg-ssl-voyager
+      log_model: false
+      experiment: null
+      prefix: ''
+      checkpoint_name: null
+      entity: null
+      notes: null
+      tags: null
+      config: null
+      config_exclude_keys: null
+      config_include_keys: null
+      allow_val_change: null
+      group: null
+      job_type: null
+      mode: online
+      force: null
+      reinit: null
+      resume: null
+      resume_from: null
+      fork_from: null
+      save_code: null
+      tensorboard: null
+      sync_tensorboard: null
+      monitor_gym: null
+      settings: null
   callbacks: null
   fast_dev_run: false
   max_epochs: 1
@@ -22,7 +56,7 @@ trainer:
   val_check_interval: null
   check_val_every_n_epoch: 1
   num_sanity_val_steps: null
-  log_every_n_steps: null
+  log_every_n_steps: 5
   enable_checkpointing: null
   enable_progress_bar: null
   enable_model_summary: null
