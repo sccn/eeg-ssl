@@ -30,6 +30,8 @@ class RankMe(Metric):
             raise ValueError('Expect 2D embeddings of shape (N, K)')
         if embs.shape[0] < embs.shape[1]:
             raise ValueError(f'Expect N >= K but received ({embs.shape})')
+        # subselect 25600 embeddings randomly
+        embs = embs[torch.randperm(embs.shape[0])[:25600]]
         _, S, _ = torch.linalg.svd(embs)
         eps = 1e-7
         p = S/torch.linalg.norm(S, ord=1) + eps

@@ -1,5 +1,6 @@
 numpy==1.26.4
 git+https://github.com/dungscout96/mne-python.git
+joblib
 braindecode
 tensorboard
 lightning==2.5.0
