@@ -9,7 +9,7 @@ trainer:
   logger: null
   callbacks: null
   fast_dev_run: false
-  max_epochs: 1
+  max_epochs: null
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -54,12 +54,12 @@ data:
   ssl_task:
       class_path: libs.ssl_task.VICReg
       init_args:
-        tau_pos_s: 10
+        tau_pos_s: 2
         n_samples_per_dataset: 1
-  window_len_s: 10
+  window_len_s: 0.5
   random_state: 9
   batch_size: 64
-  num_workers: 0
+  num_workers: 10
   data_dir: /mnt/nemar/openneuro
   cache_dir: data
   datasets:
