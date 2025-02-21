@@ -52,7 +52,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         print(f"Using datasets: {self.datasets}")
         selected_tasks = ['RestingState']
         for dsnumber in self.datasets:
-            savedir = f'{self.cache_dir}/{dsnumber}_preprocessed'
+            savedir = Path(self.cache_dir) / f'{dsnumber}_preprocessed'
             if not os.path.exists(savedir) or self.overwrite_preprocessed:
                 ds = HBNDataset(dsnumber, data_path=f"{self.data_dir}/{dsnumber}", tasks=selected_tasks, num_workers=-1, preload=False)
                 ds = self.preprocess(ds, savedir)
@@ -79,7 +79,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         return ds
 
     def setup(self, stage=None):
-        all_ds = BaseConcatDataset([load_concat_dataset(path=f'{self.cache_dir}/{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets])
+        all_ds = BaseConcatDataset([load_concat_dataset(path=Path(self.cache_dir) / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets])
         # set desired label target
         target_name = 'age'
         for ds in all_ds.datasets:
