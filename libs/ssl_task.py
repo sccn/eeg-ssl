@@ -294,23 +294,23 @@ class RelativePositioning(SSLTask):
         def __len__(self):
             return self.n_examples
     
-        class RelativePositioningLit(LitSSL):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.save_hyperparameters()
-                self.clf = nn.Linear(self.emb_size, 1)
-            
-            def training_step(self, batch, batch_idx):
-                # training_step defines the train loop.
-                # it is independent of forward
-                X, y = batch
-                x1, x2 = X[0], X[1]
-                z1, z2 = self.embed(x1), self.embed(x2)
-                z = torch.abs(z1 - z2)
-                loss = nn.functional.binary_cross_entropy_with_logits(self.clf(z).flatten(), y)
+    class RelativePositioningLit(LitSSL):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.save_hyperparameters()
+            self.clf = nn.Linear(self.emb_size, 1)
+        
+        def training_step(self, batch, batch_idx):
+            # training_step defines the train loop.
+            # it is independent of forward
+            X, y = batch
+            x1, x2 = X[0], X[1]
+            z1, z2 = self.embed(x1), self.embed(x2)
+            z = torch.abs(z1 - z2)
+            loss = nn.functional.binary_cross_entropy_with_logits(self.clf(z).flatten(), y)
 
-                self.log("train_loss", loss)
-                return loss
+            self.log("train_loss", loss)
+            return loss
 
 class VICReg(SSLTask):
     def __init__(self, 
@@ -442,6 +442,7 @@ class VICReg(SSLTask):
                 mu=25.0,
                 nu=1):
             n, d = z1.shape[0], z1.shape[1]
+            # Bardes, A., Ponce, J. & LeCun, Y. VICReg. http://arxiv.org/abs/2105.04906 (2022).
             # variance
             def reg_std(x, eps=0.0001):
                 return torch.sqrt(x.var(dim=0) + eps)        # equation (2)
