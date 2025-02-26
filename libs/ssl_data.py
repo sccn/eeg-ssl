@@ -46,9 +46,6 @@ class SSLHBNDataModule(L.LightningDataModule):
         HBN_DSNUMBERS = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
         self.datasets = datasets if datasets is not None else HBN_DSNUMBERS
         self.save_hyperparameters()
-        import platform
-        if platform.system() == "Windows":
-            self.num_workers = 1
 
     def prepare_data(self):
         # create preprocessed data if not exists
@@ -57,8 +54,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         for dsnumber in self.datasets:
             savedir = self.cache_dir / f'{dsnumber}_preprocessed'
             if not os.path.exists(savedir) or self.overwrite_preprocessed:
-                # Set num_workers to 1 for Windows compatibility
-                ds = HBNDataset(dsnumber, data_path=self.data_dir / dsnumber, tasks=selected_tasks, num_workers=self.num_workers, preload=False)
+                ds = HBNDataset(dsnumber, data_path=self.data_dir / dsnumber, tasks=selected_tasks, num_workers=-1, preload=False)
                 ds = self.preprocess(ds, savedir)
         
     def preprocess(self, ds, savedir):
@@ -78,11 +74,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             Preprocessor(standard_scale, channel_wise=True),
         ]
         # Transform the data
-        import platform
-        if platform.system() == "Windows":
-            preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=1)
-        else:
-            preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=-1)
+        preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=-1)
 
         return ds
 
@@ -216,7 +208,7 @@ class HBNDataset(BaseConcatDataset):
                 if base_ds:
                     all_base_ds.append(base_ds)
         else:
-            all_base_ds = Parallel(n_jobs=num_workers, prefer="threads", verbose=1)(
+            all_base_ds = Parallel(n_jobs=num_workers, prefer="threads")(
                     delayed(parseBIDSfile)(f) for f in files
             )
         super().__init__(all_base_ds)
@@ -357,25 +349,16 @@ class BIDSDataset():
         return result_files
 
     def get_files_with_extension_parallel(self, directory, extension='.set', max_workers=-1):
-        import platform
-        # Force single worker on Windows
-        if platform.system() == "Windows":
-            max_workers = 1
-            
         result_files = []
         dirs_to_scan = [directory]
 
         # Use joblib.Parallel and delayed to parallelize directory scanning
         while dirs_to_scan:
             print(f"Scanning {len(dirs_to_scan)} directories...", dirs_to_scan)
-            if platform.system() == "Windows":
-                # Sequential scanning on Windows
-                results = [self.scan_directory(d, extension) for d in dirs_to_scan]
-            else:
-                # Parallel scanning on other platforms
-                results = Parallel(n_jobs=max_workers, prefer="threads", verbose=1)(
-                    delayed(self.scan_directory)(d, extension) for d in dirs_to_scan
-                )
+            # Run the scan_directory function in parallel across directories
+            results = Parallel(n_jobs=max_workers, prefer="threads", verbose=1)(
+                delayed(self.scan_directory)(d, extension) for d in dirs_to_scan
+            )
             
             # Reset the directories to scan and process the results
             dirs_to_scan = []
