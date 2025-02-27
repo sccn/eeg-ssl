@@ -68,7 +68,7 @@ kubectl exec -it eeg-ssl-interactive  -- /bin/bash
 python main.py fit --config runs/config_RP.yaml
 ```
 
-- Register on Weights and Biases https://wandb.ai/site/, and get a key. At some point, the script above (after processing the data) will ask if you have an account, enter yes, and then copy your key. Once the script finishes, look at the results on weights and biases website.
+- Register on Weights and Biases https://wandb.ai/site/, and get a key at https://wandb.ai/authorize. At some point, the script above (after processing the data) will ask if you have an account, enter yes, and then copy your key. Once the script finishes, look at the results on weights and biases website.
 
 - Modify the network parameters in "runs/config_RP.yaml". Of importance are the number of epochs, the tau_pos_s value (10 second segment), the window_len_s (sub window of the segment, for example 2 seconds) and "n_samples_per_dataset" the number of sample to extract from each dataset (for example 100). This means that a window of 2 second will be extracted 100 times (at different latencies) from the 10 second segment.
 
