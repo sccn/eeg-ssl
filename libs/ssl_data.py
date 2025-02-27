@@ -208,7 +208,7 @@ class HBNDataset(BaseConcatDataset):
                 if base_ds:
                     all_base_ds.append(base_ds)
         else:
-            all_base_ds = Parallel(n_jobs=num_workers)(
+            all_base_ds = Parallel(n_jobs=num_workers, prefer="threads")(
                     delayed(parseBIDSfile)(f) for f in files
             )
         super().__init__(all_base_ds)
