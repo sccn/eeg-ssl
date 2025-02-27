@@ -44,15 +44,13 @@ class DistributedRecordingSampler(DistributedSampler):
             self, 
             metadata,
             random_state=None,
-            shuffle=None,
+            **kwargs,
     ):
         self.metadata = metadata
         self.info = self._init_info(metadata)
         self.rng = check_random_state(random_state)
         # send information to DistributedSampler parent to handle data splitting among workers
-        super().__init__(self.info, shuffle=shuffle)
-         # super iter should contain only indices of datasets specific to the current process
-        self._iterator = list(super().__iter__())
+        super().__init__(self.info, **kwargs)
 
     def _init_info(self, metadata, required_keys=None):
         """Initialize ``info`` DataFrame.
@@ -92,11 +90,10 @@ class DistributedRecordingSampler(DistributedSampler):
 
     def sample_recording(self):
         """Return a random recording index.
-        self._iterator contains indices of datasets specific to the current process
-        determined by the DistributedSampler
+        DistributedSampler's iterator  contains indices of recordings specific to the current process
         """
         # XXX docstring missing
-        return self.rng.choice(self._iterator)
+        return self.rng.choice(list(super().__iter__()))
 
     def sample_window(self, rec_ind=None):
         """Return a specific window.
@@ -117,7 +114,7 @@ class DistributedRecordingSampler(DistributedSampler):
 
     @property
     def n_recordings(self):
-        return len(self._iterator)
+        return len(super())
 
 class SSLTask():
     def __init__(self):
@@ -222,8 +219,8 @@ class RelativePositioning(SSLTask):
         for each subset of recordings accordingly
         '''
         def __init__(self, metadata, tau_pos, tau_neg, n_samples_per_dataset, 
-                    tau_max=None, same_rec_neg=True, random_state=None, shuffle=True):
-            super().__init__(metadata, random_state=random_state, shuffle=shuffle)
+                    tau_max=None, same_rec_neg=True, random_state=None, **kwargs):
+            super().__init__(metadata, random_state=random_state, **kwargs)
             self.tau_pos = tau_pos
             self.tau_neg = tau_neg
             self.tau_max = np.inf if tau_max is None else tau_max
@@ -232,9 +229,9 @@ class RelativePositioning(SSLTask):
                 raise ValueError('More than one recording must be available when '
                                 'using across-recording negative sampling.')
 
-            self.n_examples = n_samples_per_dataset * len(self._iterator)
-            print(f"rank {dist.get_rank()} - Number of datasets:", len(self._iterator))
-            print(f"rank {dist.get_rank()} - Number of samples:", self.n_examples) 
+            self.n_examples = n_samples_per_dataset * self.n_recordings
+            print(f"Process {self.rank} - Number of datasets:", self.n_recordings)
+            print(f"Process {self.rank} - Number of samples:", self.n_examples) 
 
         def _sample_pair(self):
             """Sample a pair of two windows.
