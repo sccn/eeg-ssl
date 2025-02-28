@@ -114,7 +114,7 @@ class DistributedRecordingSampler(DistributedSampler):
 
     @property
     def n_recordings(self):
-        return len(super())
+        return super().__len__()
 
 class SSLTask():
     def __init__(self):
@@ -230,8 +230,8 @@ class RelativePositioning(SSLTask):
                                 'using across-recording negative sampling.')
 
             self.n_examples = n_samples_per_dataset * self.n_recordings
-            print(f"Process {self.rank} - Number of datasets:", self.n_recordings)
-            print(f"Process {self.rank} - Number of samples:", self.n_examples) 
+            print(f"Device {self.rank} - Number of datasets:", self.n_recordings)
+            print(f"Device {self.rank} - Number of samples:", self.n_examples) 
 
         def _sample_pair(self):
             """Sample a pair of two windows.
