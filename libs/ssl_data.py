@@ -29,9 +29,10 @@ class SSLHBNDataModule(L.LightningDataModule):
         random_state=9, 
         batch_size: int = 64, 
         num_workers=0,
-        data_dir='data',
-        cache_dir=None,
+        data_dir='/mnt/nemar/openneuro',
+        cache_dir='data',
         datasets:list[str]=None,
+        target_label='age',
         overwrite_preprocessed=False,
     ):
         super().__init__()
@@ -43,8 +44,9 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.data_dir = Path(data_dir)
         self.cache_dir = Path(cache_dir) if cache_dir is not None else self.data_dir
         self.overwrite_preprocessed = overwrite_preprocessed
-        HBN_DSNUMBERS = ['ds005514','ds005512','ds005511','ds005510','ds005509','ds005508','ds005507','ds005506','ds005505']
+        HBN_DSNUMBERS = ['ds005512','ds005510','ds005509','ds005508','ds005507','ds005505']
         self.datasets = datasets if datasets is not None else HBN_DSNUMBERS
+        self.target_label = target_label
         self.save_hyperparameters()
 
     def prepare_data(self):
@@ -80,10 +82,16 @@ class SSLHBNDataModule(L.LightningDataModule):
 
     def setup(self, stage=None):
         all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets])
+
         # set desired label target
-        target_name = 'age'
+        if self.target_label not in all_ds.description.columns:
+            raise ValueError(f"Target label {self.target_label} not found in dataset description")
+        filtered_nan = []
         for ds in all_ds.datasets:
-            ds.target_name = target_name
+            if not pd.isna(ds.description[self.target_label]):
+                ds.target_name = self.target_label
+                filtered_nan.append(ds)
+        all_ds = BaseConcatDataset(filtered_nan)
 
         # Extract windows
         fs = all_ds.datasets[0].raw.info['sfreq']
