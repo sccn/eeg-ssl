@@ -2,7 +2,7 @@ import torch
 from torch import optim
 from torch.nn import functional as F
 import torch.nn as nn
-from .evaluation import train_regressor, RankMe
+from .evaluation import RankMe, Regressor
 import lightning as L
 
 class LitSSL(L.LightningModule):
@@ -32,7 +32,7 @@ class LitSSL(L.LightningModule):
             nn.Dropout(dropout)
         )
             
-        evaluators = ['RankMe']
+        evaluators = ['RankMe', 'Regressor']
         self.evaluators = [globals()[evaluator]() for evaluator in evaluators]
         
     def embed(self, x):
@@ -42,29 +42,33 @@ class LitSSL(L.LightningModule):
         raise NotImplementedError()
 
     def validation_step(self, batch, batch_idx):
+        from sklearn.linear_model import LinearRegression
         X, Y, _ = batch
         z = self.embed(X)
+
         for evaluator in self.evaluators:
-            evaluator.update(z)
-            # self.log('valid_acc', evaluator, on_step=False, on_epoch=True)
+            evaluator.update((z, Y))
+
         # pass
         
     def test_step(self, batch, batch_idx):
         # this is the test loop
-        X, y = batch
-        x = x.view(x.size(0), -1)
-        z = self.encoder(x)
-        x_hat = self.decoder(z)
-        test_loss = F.mse_loss(x_hat, x)
-        self.log("test_loss", test_loss)
+        # X, y = batch
+        # x = x.view(x.size(0), -1)
+        # z = self.encoder(x)
+        # x_hat = self.decoder(z)
+        # test_loss = F.mse_loss(x_hat, x)
+        # self.log("test_loss", test_loss)
+        pass
 
     def on_validation_epoch_end(self):
-    #     # log epoch metric
         for evaluator in self.evaluators:
-            # self.log(f'val_{type(evaluator).__name__}', evaluator, on_step=False, on_epoch=True)
-            self.log(f'val_{type(evaluator).__name__}', evaluator.compute())
-            evaluator.reset()
-    #     pass
+            val =  evaluator.compute()
+            self.log(f'val_{type(evaluator).__name__}', val)
+            print(f'val_{type(evaluator).__name__}', val)
+        #     evaluator.reset()
+
+        # pass
     
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=1e-3)
