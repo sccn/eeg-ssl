@@ -41,9 +41,18 @@ trainer:
       sync_tensorboard: null
       monitor_gym: null
       settings: null
-  callbacks: null
+  callbacks:
+    class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: val_Regressor
+      mode: min
+      save_top_k: 3
+      save_last: false
+      save_weights_only: false
+      auto_insert_metric_name: true
+      filename: "{epoch:03d}-{val_Regressor:.3f}"
   fast_dev_run: false
-  max_epochs: 3
+  max_epochs: 10
   min_epochs: null
   max_steps: -1
   min_steps: null
