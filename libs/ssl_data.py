@@ -86,12 +86,20 @@ class SSLHBNDataModule(L.LightningDataModule):
         # set desired label target
         if self.target_label not in all_ds.description.columns:
             raise ValueError(f"Target label {self.target_label} not found in dataset description")
-        filtered_nan = []
+        filtered_ds = []
+        bad_subjects = ['NDARJP304NK1', 'NDARME789TD2', 'NDARUA442ZVF', 'NDARTY128YLU', 'NDARDW550GU6','NDARLD243KRE']
         for ds in all_ds.datasets:
-            if not pd.isna(ds.description[self.target_label]):
+            valid = True
+            # filter nan target label
+            if pd.isna(ds.description[self.target_label]):
+                valid = False
+            if ds.description['subject'] in bad_subjects:
+                valid = False
+            if valid:
                 ds.target_name = self.target_label
-                filtered_nan.append(ds)
-        all_ds = BaseConcatDataset(filtered_nan)
+                filtered_ds.append(ds)
+
+        all_ds = BaseConcatDataset(filtered_ds)
 
         # Extract windows
         fs = all_ds.datasets[0].raw.info['sfreq']
