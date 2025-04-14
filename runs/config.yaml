@@ -6,10 +6,44 @@ trainer:
   devices: auto
   num_nodes: 1
   precision: null
-  logger: null
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      name: null
+      save_dir: .
+      version: null
+      offline: false
+      dir: null
+      id: null
+      anonymous: null
+      project: eeg-ssl
+      log_model: true # for saving model checkpoint
+      experiment: null
+      prefix: ''
+      checkpoint_name: null
+      entity: null
+      notes: null
+      tags: null
+      config: null
+      config_exclude_keys: null
+      config_include_keys: null
+      allow_val_change: true # supposedly for saving model checkpoint
+      group: null
+      job_type: "training" # supposedly for saving model checkpoint
+      mode: online
+      force: null
+      reinit: null
+      resume: "allow" # for saving model checkpoint
+      resume_from: null
+      fork_from: null
+      save_code: true
+      tensorboard: null
+      sync_tensorboard: null
+      monitor_gym: null
+      settings: null
   callbacks: null
   fast_dev_run: false
-  max_epochs: 1
+  max_epochs: 3
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -20,10 +54,10 @@ trainer:
   limit_predict_batches: null
   overfit_batches: 0.0
   val_check_interval: null
-  check_val_every_n_epoch: 1
+  check_val_every_n_epoch: 3
   num_sanity_val_steps: null
-  log_every_n_steps: null
-  enable_checkpointing: null
+  log_every_n_steps: 1
+  enable_checkpointing: True
   enable_progress_bar: null
   enable_model_summary: null
   accumulate_grad_batches: 1
@@ -39,16 +73,14 @@ trainer:
   plugins: null
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: null
+  default_root_dir: None
 model:
-  class_path: libs.ssl_model.LitSSL
+  class_path: libs.ssl_task.RelativePositioning.RelativePositioningLit
   init_args:
     encoder:
       class_path: libs.ssl_model.VGGSSL
     encoder_emb_size: 1024
     emb_size: 100
-    # evaluators:
-    # - RankMe
     dropout: 0.5
 data:
   ssl_task:
@@ -57,20 +89,25 @@ data:
         tau_pos_s: 10
         tau_neg_s: null
         same_rec_neg: false
-        n_samples_per_dataset: 250
-  window_len_s: 10
+        n_samples_per_dataset: 2
+  window_len_s: 2
   random_state: 9
   batch_size: 64
-  num_workers: 0
+  num_workers: 30
   data_dir: /mnt/nemar/openneuro
   cache_dir: data
   datasets:
   - ds005505
+  - ds005506
   - ds005507
   - ds005508
   - ds005509
   - ds005510
+  - ds005511
   - ds005512
+  - ds005514
+  - ds005515
+  - ds005516
   target_label: p_factor
   overwrite_preprocessed: false
 optimizer: null

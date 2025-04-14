@@ -38,10 +38,8 @@ class RankMe(Metric):
 
 class Regressor(Metric):
     '''
-    From paper: 
-    Garrido, Q., Balestriero, R., Najman, L. & Lecun, Y. RankMe: Assessing the downstream performance of pretrained self-supervised representations by their rank. 
-    Preprint at https://doi.org/10.48550/arXiv.2210.02885 (2023).
-    '''        
+    Validation using regression on target label
+    '''
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_state("embs", default=[], dist_reduce_fx='cat')
@@ -60,9 +58,6 @@ class Regressor(Metric):
         labels = dim_zero_cat(self.labels).float()
         if len(embs.shape) > 2:
             raise ValueError('Expect 2D embeddings of shape (N, K)')
-        # if embs.shape[0] < embs.shape[1]:
-        #     raise ValueError(f'Expect N >= K but received ({embs.shape})')
-        # subselect 25600 em
         regr = LinearRegression()
         embs = embs.cpu()
         labels = labels.cpu()

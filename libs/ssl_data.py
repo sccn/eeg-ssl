@@ -80,14 +80,20 @@ class SSLHBNDataModule(L.LightningDataModule):
 
         return ds
 
-    def setup(self, stage=None):
-        all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets])
+    def get_and_filter_dataset(self, dataset_type='train'):
+        valid_release = 'ds005516'
+        if dataset_type == 'train':
+            # load all datasets
+            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets if dsnumber != valid_release])
+        elif dataset_type == 'valid':
+            # load only validation dataset
+            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{valid_release}_preprocessed', preload=False)])
 
         # set desired label target
         if self.target_label not in all_ds.description.columns:
             raise ValueError(f"Target label {self.target_label} not found in dataset description")
         filtered_ds = []
-        bad_subjects = ['NDARJP304NK1', 'NDARME789TD2', 'NDARUA442ZVF', 'NDARTY128YLU', 'NDARDW550GU6','NDARLD243KRE']
+        bad_subjects = ['NDARBX830ZD4', 'NDARHZ923PAH', 'NDARJP304NK1', 'NDARME789TD2', 'NDARUA442ZVF', 'NDARTY128YLU', 'NDARDW550GU6','NDARLD243KRE']
         for ds in all_ds.datasets:
             valid = True
             # filter nan target label
@@ -105,32 +111,40 @@ class SSLHBNDataModule(L.LightningDataModule):
         fs = all_ds.datasets[0].raw.info['sfreq']
         window_len_samples = int(fs * self.window_len_s)
         window_stride_samples = int(fs * self.window_len_s) # non-overlapping
-        self.windows_ds = create_fixed_length_windows(
+        windows_ds = create_fixed_length_windows(
             all_ds, start_offset_samples=0, stop_offset_samples=None,
             window_size_samples=window_len_samples,
             window_stride_samples=window_stride_samples, drop_last_window=True,
             preload=False)
+        
+        return windows_ds
 
-        # split into train/valid/test by subjects
-        # Note: right now ignore train split. Train on all subjects
-        subjects = np.unique(self.windows_ds.description['subject'])
-        subj_train, subj_test = train_test_split(
-            subjects, test_size=0.4, random_state=self.random_state)
-        subj_valid, subj_test = train_test_split(
-            subj_test, test_size=0.5, random_state=self.random_state)
-        self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
+    def setup(self, stage=None):
+        # # split into train/valid/test by subjects
+        # # Note: right now ignore train split. Train on all subjects
+        # subjects = np.unique(self.windows_ds.description['subject'])
+        # subj_train, subj_test = train_test_split(
+        #     subjects, test_size=0.4, random_state=self.random_state)
+        # subj_valid, subj_test = train_test_split(
+        #     subj_test, test_size=0.5, random_state=self.random_state)
+        # self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
 
         if stage == 'fit':
             # use all datasets for training
-            self.train_ds = self.ssl_task.dataset(self.windows_ds.datasets)
-            self.valid_ds = self.ssl_task.dataset(
-                [ds for ds in self.windows_ds.datasets
-                if ds.description['subject'] in self.split_ids['valid']])
+            train_ds = self.get_and_filter_dataset('train')
+            valid_ds = self.get_and_filter_dataset('valid')
+            assert set(train_ds.description['subject']).intersection(set(valid_ds.description['subject'])) == set(), "Train and valid datasets should not overlap"
+
+            self.train_ds = self.ssl_task.dataset(train_ds.datasets)
+            self.valid_ds = self.ssl_task.dataset(valid_ds.datasets)
+                # [ds for ds in self.windows_ds.datasets
+                # if ds.description['subject'] in self.split_ids['valid']])
             self.valid_ds.return_pair = False
         elif stage == 'test':
-            self.test_ds = self.ssl_task.dataset(
-                [ds for ds in self.windows_ds.datasets
-                if ds.description['subject'] in self.split_ids['test']])
+            valid_ds = self.get_and_filter_dataset('valid')
+            self.test_ds = self.ssl_task.dataset(valid_ds.datasets)
+                # [ds for ds in self.windows_ds.datasets
+                # if ds.description['subject'] in self.split_ids['test']])
             self.test_ds.return_pair = False
 
     def train_dataloader(self):
@@ -196,7 +210,7 @@ class HBNDataset(BaseConcatDataset):
             metadata_keys = ['task', 'session', 'run', 'subject', 'sfreq']
             metadata = {key: getattr(self.bids_dataset, key)(f) for key in metadata_keys}
             subject = self.bids_dataset.subject(f)
-            subject_metadata_keys = ['age', 'sex', 'ehq_total', 'p_factor', 'attention', 'internalizing', 'externalizing']
+            subject_metadata_keys = ['release_number', 'age', 'sex', 'ehq_total', 'p_factor', 'attention', 'internalizing', 'externalizing']
             metadata.update({key: subject_df.loc[subject_df['participant_id'] == f"sub-{subject}"][key].values[0] for key in subject_metadata_keys})
             # # electrodes locations in 2D
             # lt = mne.channels.find_layout(raw.info, 'eeg')
