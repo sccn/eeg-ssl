@@ -9,12 +9,12 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      name: null
+      name: clear-firebrand-13
       save_dir: .
       version: null
       offline: false
       dir: null
-      id: null
+      id: iy6j4awu
       anonymous: null
       project: eeg-ssl
       log_model: true
@@ -44,15 +44,15 @@ trainer:
   callbacks:
     class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
-      monitor: val_Regressor
-      mode: min
+      monitor: val_Regressor/concordance
+      mode: max
       save_top_k: 3
-      save_last: false
+      save_last: true
       save_weights_only: false
       auto_insert_metric_name: true
-      filename: "{epoch:03d}-{val_Regressor:.3f}"
+      filename: "{epoch:03d}-{val_Regressor_concordance:.3f}"
   fast_dev_run: false
-  max_epochs: 10
+  max_epochs: 250
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -100,7 +100,6 @@ data:
         same_rec_neg: false
         n_samples_per_dataset: 2
   window_len_s: 2
-  random_state: 9
   batch_size: 64
   num_workers: 30
   data_dir: /mnt/nemar/openneuro

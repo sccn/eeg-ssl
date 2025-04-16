@@ -42,34 +42,47 @@ class LitSSL(L.LightningModule):
         raise NotImplementedError()
 
     def validation_step(self, batch, batch_idx):
-        from sklearn.linear_model import LinearRegression
+        X, Y, _ = batch
+        z = self.embed(X)
+
+        for evaluator in self.evaluators:
+            evaluator.update((z, Y))
+        
+    def test_step(self, batch, batch_idx):
         X, Y, _ = batch
         z = self.embed(X)
 
         for evaluator in self.evaluators:
             evaluator.update((z, Y))
 
-        # pass
-        
-    def test_step(self, batch, batch_idx):
-        # this is the test loop
-        # X, y = batch
-        # x = x.view(x.size(0), -1)
-        # z = self.encoder(x)
-        # x_hat = self.decoder(z)
-        # test_loss = F.mse_loss(x_hat, x)
-        # self.log("test_loss", test_loss)
-        pass
+    def predict_step(self, batch, batch_idx):
+        X, Y, _ = batch
+        z = self.embed(X)
+
+        return z
 
     def on_validation_epoch_end(self):
         for evaluator in self.evaluators:
             val =  evaluator.compute()
-            self.log(f'val_{type(evaluator).__name__}', val)
-            print(f'val_{type(evaluator).__name__}', val)
-        #     evaluator.reset()
-
-        # pass
+            if type(val) == dict:
+                for k, v in val.items():
+                    self.log(f'val_{type(evaluator).__name__}/{k}', v)
+                    print(f'val_{type(evaluator).__name__}/{k}', v)
+            else:
+                self.log(f'val_{type(evaluator).__name__}', val)
+                print(f'val_{type(evaluator).__name__}', val)
     
+    def on_test_epoch_end(self):
+        for evaluator in self.evaluators:
+            val =  evaluator.compute()
+            if type(val) == dict:
+                for k, v in val.items():
+                    self.log(f'val_{type(evaluator).__name__}/{k}', v)
+                    print(f'val_{type(evaluator).__name__}/{k}', v)
+            else:
+                self.log(f'val_{type(evaluator).__name__}', val)
+                print(f'val_{type(evaluator).__name__}', val)
+
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=1e-3)
         return optimizer

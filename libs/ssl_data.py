@@ -26,7 +26,6 @@ class SSLHBNDataModule(L.LightningDataModule):
     def __init__(self, 
         ssl_task: SSLTask = RelativePositioning,
         window_len_s=10, 
-        random_state=9, 
         batch_size: int = 64, 
         num_workers=0,
         data_dir='/mnt/nemar/openneuro',
@@ -40,7 +39,6 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.window_len_s = window_len_s
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.random_state = random_state
         self.data_dir = Path(data_dir)
         self.cache_dir = Path(cache_dir) if cache_dir is not None else self.data_dir
         self.overwrite_preprocessed = overwrite_preprocessed
@@ -136,16 +134,19 @@ class SSLHBNDataModule(L.LightningDataModule):
             assert set(train_ds.description['subject']).intersection(set(valid_ds.description['subject'])) == set(), "Train and valid datasets should not overlap"
 
             self.train_ds = self.ssl_task.dataset(train_ds.datasets)
-            self.valid_ds = self.ssl_task.dataset(valid_ds.datasets)
+            # self.valid_ds = self.ssl_task.dataset(valid_ds.datasets)
+            self.valid_ds = valid_ds
                 # [ds for ds in self.windows_ds.datasets
                 # if ds.description['subject'] in self.split_ids['valid']])
-            self.valid_ds.return_pair = False
+            # self.valid_ds.return_pair = False
         elif stage == 'test':
             valid_ds = self.get_and_filter_dataset('valid')
-            self.test_ds = self.ssl_task.dataset(valid_ds.datasets)
+            # print(valid_ds.datasets)
+            # self.test_ds = self.ssl_task.dataset(valid_ds.datasets)
+            self.test_ds = valid_ds
                 # [ds for ds in self.windows_ds.datasets
                 # if ds.description['subject'] in self.split_ids['test']])
-            self.test_ds.return_pair = False
+            # self.test_ds.return_pair = False
 
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)

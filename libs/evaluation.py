@@ -3,6 +3,7 @@ sys.path.insert(0, '/home/dung/eeg-ssl')
 import os
 import torch
 from torchmetrics import Metric
+from torchmetrics.functional.regression import concordance_corrcoef, r2_score, normalized_root_mean_squared_error, mean_squared_error
 from torchmetrics.utilities import dim_zero_cat
 import numpy as np
 
@@ -62,8 +63,15 @@ class Regressor(Metric):
         embs = embs.cpu()
         labels = labels.cpu()
         regr.fit(embs, labels)
-        score = regr.score(embs, labels) 
-        return score
+        preds = torch.tensor(regr.predict(embs))
+
+        metrics = ['R2',    'concordance',      'NRMSE',                        'mse']
+        fcns = [r2_score, concordance_corrcoef, normalized_root_mean_squared_error, mean_squared_error]
+        scores = {}
+        for metric, fcn in zip(metrics, fcns):
+            scores[metric] = fcn(preds, labels)
+        
+        return scores
 
 def get_prediction_for_subject(subject, embs, labels, regr, subjects):
     subject_embs = embs[subjects==subject]
