@@ -45,18 +45,23 @@ class Regressor(Metric):
         super().__init__(**kwargs)
         self.add_state("embs", default=[], dist_reduce_fx='cat')
         self.add_state("labels", default=[], dist_reduce_fx='cat')
+        self.add_state("subjects", default=[], dist_reduce_fx='cat')
 
     def update(self, data:tuple) -> None:
         embs = data[0]
         labels = data[1]
+        subjects = data[2]
         self.embs.append(embs)
         self.labels.append(labels)
+        self.subjects.append(subjects)
 
     def compute(self) -> torch.Tensor:
         from sklearn.linear_model import LinearRegression
         # parse inputs
         embs = dim_zero_cat(self.embs).float()
         labels = dim_zero_cat(self.labels).float()
+        # subjects = dim_zero_cat(self.subjects).float()
+        # print(self.subjects)
         if len(embs.shape) > 2:
             raise ValueError('Expect 2D embeddings of shape (N, K)')
         regr = LinearRegression()
@@ -72,16 +77,3 @@ class Regressor(Metric):
             scores[metric] = fcn(preds, labels)
         
         return scores
-
-def get_prediction_for_subject(subject, embs, labels, regr, subjects):
-    subject_embs = embs[subjects==subject]
-    subject_labels = labels[subjects==subject]
-    return regr.predict(subject_embs).mean(), subject_labels.mean()
-
-def subject_level_score(embs, labels, regr, subjects):
-    unique_subjects = np.unique(subjects)
-    subject_level_predictions = np.array([get_prediction_for_subject(subject, embs, labels, regr, subjects) for subject in unique_subjects])
-    res_sum = ((subject_level_predictions[1] - subject_level_predictions[0])**2).sum()
-    total_sum = ((subject_level_predictions[1] - subject_level_predictions[1].mean())**2).sum()
-    
-    return 1-res_sum/total_sum

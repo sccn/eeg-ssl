@@ -1,20 +1,21 @@
 # lightning.pytorch==2.5.0
 seed_everything: 0
 trainer:
+  deterministic: true
   accelerator: auto
   strategy: auto
   devices: auto
   num_nodes: 1
-  precision: null
+  precision: 16-mixed
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      name: clear-firebrand-13
+      name: null
       save_dir: .
       version: null
       offline: false
       dir: null
-      id: iy6j4awu
+      id: null
       anonymous: null
       project: eeg-ssl
       log_model: true
@@ -46,8 +47,9 @@ trainer:
     init_args:
       monitor: val_Regressor/concordance
       mode: max
-      save_top_k: 3
+      save_top_k: 2
       save_last: true
+      every_n_train_steps: 50
       save_weights_only: false
       auto_insert_metric_name: true
       filename: "{epoch:03d}-{val_Regressor_concordance:.3f}"
@@ -82,7 +84,7 @@ trainer:
   plugins: null
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: None
+  default_root_dir: .
 model:
   class_path: libs.ssl_task.RelativePositioning.RelativePositioningLit
   init_args:
@@ -98,7 +100,7 @@ data:
         tau_pos_s: 10
         tau_neg_s: null
         same_rec_neg: false
-        n_samples_per_dataset: 2
+        n_samples_per_dataset: 10
   window_len_s: 2
   batch_size: 64
   num_workers: 30

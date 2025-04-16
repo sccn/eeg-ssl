@@ -82,7 +82,7 @@ trainer:
   plugins: null
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: None
+  default_root_dir: .
 model:
   class_path: libs.ssl_task.RelativePositioning.RelativePositioningLit
   init_args:
@@ -100,7 +100,6 @@ data:
         same_rec_neg: false
         n_samples_per_dataset: 2
   window_len_s: 2
-  random_state: 9
   batch_size: 64
   num_workers: 30
   data_dir: /mnt/nemar/openneuro

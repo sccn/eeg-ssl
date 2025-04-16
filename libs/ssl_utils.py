@@ -41,19 +41,21 @@ class LitSSL(L.LightningModule):
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
 
+
+
     def validation_step(self, batch, batch_idx):
-        X, Y, _ = batch
+        X, Y, _, subjects = batch
         z = self.embed(X)
 
         for evaluator in self.evaluators:
-            evaluator.update((z, Y))
+            evaluator.update((z, Y, subjects))
         
     def test_step(self, batch, batch_idx):
-        X, Y, _ = batch
+        X, Y, _, subjects = batch
         z = self.embed(X)
 
         for evaluator in self.evaluators:
-            evaluator.update((z, Y))
+            evaluator.update((z, Y, subjects))
 
     def predict_step(self, batch, batch_idx):
         X, Y, _ = batch

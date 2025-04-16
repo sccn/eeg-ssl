@@ -44,6 +44,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.overwrite_preprocessed = overwrite_preprocessed
         HBN_DSNUMBERS = ['ds005512','ds005510','ds005509','ds005508','ds005507','ds005505']
         self.datasets = datasets if datasets is not None else HBN_DSNUMBERS
+        self.bad_subjects = ['NDARBA381JGH', 'NDARUJ292JXV', 'NDARVN772GLC', 'NDARTD794NKQ', 'NDARBX830ZD4', 'NDARHZ923PAH', 'NDARJP304NK1', 'NDARME789TD2', 'NDARUA442ZVF', 'NDARTY128YLU', 'NDARDW550GU6','NDARLD243KRE']
         self.target_label = target_label
         self.save_hyperparameters()
 
@@ -81,26 +82,24 @@ class SSLHBNDataModule(L.LightningDataModule):
     def get_and_filter_dataset(self, dataset_type='train'):
         valid_release = 'ds005516'
         if dataset_type == 'train':
-            # load all datasets
             all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets if dsnumber != valid_release])
         elif dataset_type == 'valid':
-            # load only validation dataset
             all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{valid_release}_preprocessed', preload=False)])
 
-        # set desired label target
+        filtered_ds = []
+
+        # check target label validity
         if self.target_label not in all_ds.description.columns:
             raise ValueError(f"Target label {self.target_label} not found in dataset description")
-        filtered_ds = []
-        bad_subjects = ['NDARBX830ZD4', 'NDARHZ923PAH', 'NDARJP304NK1', 'NDARME789TD2', 'NDARUA442ZVF', 'NDARTY128YLU', 'NDARDW550GU6','NDARLD243KRE']
         for ds in all_ds.datasets:
-            valid = True
             # filter nan target label
-            if pd.isna(ds.description[self.target_label]):
-                valid = False
-            if ds.description['subject'] in bad_subjects:
-                valid = False
-            if valid:
-                ds.target_name = self.target_label
+            if not (pd.isna(ds.description[self.target_label]) or ds.description['subject'] in self.bad_subjects):
+                if len(ds.raw.ch_names) < 129:
+                    raise ValueError(f"Dataset {ds.description['subject']} has less than 129 channels")
+                # add subject info for validation
+                target_labels = [self.target_label, 'subject'] if dataset_type == 'valid' else self.target_label
+                # set desired label target
+                ds.target_name = target_labels
                 filtered_ds.append(ds)
 
         all_ds = BaseConcatDataset(filtered_ds)
@@ -118,15 +117,6 @@ class SSLHBNDataModule(L.LightningDataModule):
         return windows_ds
 
     def setup(self, stage=None):
-        # # split into train/valid/test by subjects
-        # # Note: right now ignore train split. Train on all subjects
-        # subjects = np.unique(self.windows_ds.description['subject'])
-        # subj_train, subj_test = train_test_split(
-        #     subjects, test_size=0.4, random_state=self.random_state)
-        # subj_valid, subj_test = train_test_split(
-        #     subj_test, test_size=0.5, random_state=self.random_state)
-        # self.split_ids = {'train': subj_train, 'valid': subj_valid, 'test': subj_test}
-
         if stage == 'fit':
             # use all datasets for training
             train_ds = self.get_and_filter_dataset('train')
@@ -134,32 +124,33 @@ class SSLHBNDataModule(L.LightningDataModule):
             assert set(train_ds.description['subject']).intersection(set(valid_ds.description['subject'])) == set(), "Train and valid datasets should not overlap"
 
             self.train_ds = self.ssl_task.dataset(train_ds.datasets)
-            # self.valid_ds = self.ssl_task.dataset(valid_ds.datasets)
             self.valid_ds = valid_ds
-                # [ds for ds in self.windows_ds.datasets
-                # if ds.description['subject'] in self.split_ids['valid']])
-            # self.valid_ds.return_pair = False
         elif stage == 'test':
             valid_ds = self.get_and_filter_dataset('valid')
-            # print(valid_ds.datasets)
-            # self.test_ds = self.ssl_task.dataset(valid_ds.datasets)
             self.test_ds = valid_ds
-                # [ds for ds in self.windows_ds.datasets
-                # if ds.description['subject'] in self.split_ids['test']])
-            # self.test_ds.return_pair = False
 
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)
         if not dist.is_initialized():
             print(f"Number of datasets: {len(self.train_ds.datasets)}")
             print(f"Number of examples: {train_sampler.n_examples}")
-        return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
+        return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, drop_last=True)
+
+    def custom_collate_fn(self, batch):
+        from torch.utils.data import default_collate
+        # custom collate function to handle subject metadata for validation and test set
+        # as specified in setup
+        sequences, labels, indices = zip(*batch)
+        dfs = pd.concat(labels)
+        subjects = list(dfs['subject'])
+        labels = default_collate(list(dfs[self.target_label]))
+        return default_collate(sequences), labels, default_collate(indices), subjects
 
     def val_dataloader(self):
-        return DataLoader(self.valid_ds, batch_size=self.batch_size, num_workers=self.num_workers)
+        return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers, shuffle=True)
 
     def test_dataloader(self):
-        return DataLoader(self.test_ds, batch_size=self.batch_size, num_workers=self.num_workers)
+        return DataLoader(self.test_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers, shuffle=True)
 
     def predict_dataloader(self):
         pass
