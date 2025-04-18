@@ -25,39 +25,6 @@ class SSLTask():
         pass
 
 class RelativePositioning(SSLTask):
-    """Sampler and Dataset object for relative positioning task from [Banville2020]_.
-
-    Sample examples as tuples of two window indices, with a label indicating
-    whether the windows are close or far, as defined by tau_pos and tau_neg.
-
-    Parameters
-    ----------
-    metadata : pd.DataFrame
-        See RecordingSampler.
-    tau_pos_s : int
-        Size of the positive context, in seconds. A positive pair contains two
-        windows x1 and x2 which are separated by at most `tau_pos` samples.
-    tau_neg_s : int
-        Size of the negative context, in seconds. A negative pair contains two
-        windows x1 and x2 which are separated by at least `tau_neg` samples and
-        at most `tau_max` samples. Ignored if `same_rec_neg` is False.
-    n_examples : int
-        Number of pairs to extract.
-    tau_max : int | None
-        See `tau_neg`.
-    same_rec_neg : bool
-        If True, sample negative pairs from within the same recording. If
-        False, sample negative pairs from two different recordings.
-    random_state : None | np.RandomState | int
-        Random state.
-
-    References
-    ----------
-    .. [Banville2020] Banville, H., Chehab, O., Hyvärinen, A., Engemann, D. A.,
-           & Gramfort, A. (2020). Uncovering the structure of clinical EEG
-           signals with self-supervised learning.
-           arXiv preprint arXiv:2007.16104.
-    """
     def __init__(self, tau_pos_s, tau_neg_s, n_samples_per_dataset, 
                  tau_max=None, same_rec_neg=True, random_state=None):
         super().__init__()
@@ -359,7 +326,7 @@ class Classification(SSLTask):
             self.log_dict(norms) 
 
         def training_step(self, batch, batch_idx):
-            self.train()
+            # self.train()
             # training_step defines the train loop.
             # it is independent of forward
             X, Y = batch[0], batch[1]
@@ -378,9 +345,9 @@ class Classification(SSLTask):
             predictions = torch.nn.functional.softmax(Z, dim=1) 
             probs, predictions = torch.max(predictions, 1) # TODO assume that's the compatible way to cross entropy
             loss = nn.functional.cross_entropy(Z, Y)
-            self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
-            self.log('val_accuracy', binary_accuracy(predictions, Y), on_epoch=True, prog_bar=True, logger=True)
-            self.log('val_f1', f1_score(predictions, Y, task='binary'), on_epoch=True, prog_bar=True, logger=True)
+            self.log("val_Classifier/loss", loss, on_epoch=True, prog_bar=True, logger=True)
+            self.log('val_Classifier/accuracy', binary_accuracy(predictions, Y), on_epoch=True, prog_bar=True, logger=True)
+            self.log('val_Classifier/f1', f1_score(predictions, Y, task='binary'), on_epoch=True, prog_bar=True, logger=True)
 
         def on_validation_epoch_end(self):
             pass

@@ -38,6 +38,9 @@ class LitSSL(L.LightningModule):
     def embed(self, x):
         return self.embedder(self.encoder(x))
 
+    def on_train_start(self):
+        self.train()
+
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
 
