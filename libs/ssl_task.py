@@ -1,120 +1,15 @@
 from braindecode.datasets import BaseDataset, BaseConcatDataset
-from braindecode.samplers import RecordingSampler, RelativePositioningSampler 
+from braindecode.samplers import RecordingSampler, RelativePositioningSampler, DistributedRecordingSampler, DistributedRelativePositioningSampler
 import torch.distributed as dist
-from torch.utils.data.distributed import DistributedSampler
 import numpy as np
 from typing import List
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-from sklearn.utils import check_random_state
 from .ssl_utils import LitSSL
-
-class DistributedRecordingSampler(DistributedSampler):
-    """Base sampler simplifying sampling from recordings in distributed setting.
-
-    Parameters
-    ----------
-    metadata : pd.DataFrame
-        DataFrame with at least one of {subject, session, run} columns for each
-        window in the BaseConcatDataset to sample examples from. Normally
-        obtained with `BaseConcatDataset.get_metadata()`. For instance,
-        `metadata.head()` might look like this:
-
-           i_window_in_trial  i_start_in_trial  i_stop_in_trial  target  subject    session    run
-        0                  0                 0              500      -1        4  session_T  run_0
-        1                  1               500             1000      -1        4  session_T  run_0
-        2                  2              1000             1500      -1        4  session_T  run_0
-        3                  3              1500             2000      -1        4  session_T  run_0
-        4                  4              2000             2500      -1        4  session_T  run_0
-
-    random_state : np.RandomState | int | None
-        Random state.
-
-    Attributes
-    ----------
-    info : pd.DataFrame
-        Series with MultiIndex index which contains the subject, session, run
-        and window indices information in an easily accessible structure for
-        quick sampling of windows.
-    n_recordings : int
-        Number of recordings available.
-    """
-    def __init__(
-            self, 
-            metadata,
-            random_state=None,
-            **kwargs,
-    ):
-        self.metadata = metadata
-        self.info = self._init_info(metadata)
-        self.rng = check_random_state(random_state)
-        # send information to DistributedSampler parent to handle data splitting among workers
-        super().__init__(self.info, **kwargs)
-
-    def _init_info(self, metadata, required_keys=None):
-        """Initialize ``info`` DataFrame.
-
-        Parameters
-        ----------
-        required_keys : list(str) | None
-            List of additional columns of the metadata DataFrame that we should
-            groupby when creating ``info``.
-
-        Returns
-        -------
-            See class attributes.
-        """
-        keys = [k for k in ["subject", "session", "run"] if k in self.metadata.columns]
-        if not keys:
-            raise ValueError(
-                "metadata must contain at least one of the following columns: "
-                "subject, session or run."
-            )
-
-        if required_keys is not None:
-            missing_keys = [k for k in required_keys if k not in self.metadata.columns]
-            if len(missing_keys) > 0:
-                raise ValueError(f"Columns {missing_keys} were not found in metadata.")
-            keys += required_keys
-
-        metadata = metadata.reset_index().rename(columns={"index": "window_index"})
-        info = (
-            metadata.reset_index()
-            .groupby(keys)[["index", "i_start_in_trial"]]
-            .agg(["unique"])
-        )
-        info.columns = info.columns.get_level_values(0)
-
-        return info
-
-    def sample_recording(self):
-        """Return a random recording index.
-        DistributedSampler's iterator  contains indices of recordings specific to the current process
-        """
-        # XXX docstring missing
-        return self.rng.choice(list(super().__iter__()))
-
-    def sample_window(self, rec_ind=None):
-        """Return a specific window.
-        """
-        # XXX docstring missing
-        if rec_ind is None:
-            rec_ind = self.sample_recording()
-        win_ind = self.rng.choice(self.info.iloc[rec_ind]['index'])
-        return win_ind, rec_ind
-
-    def sample_window(self, rec_ind=None):
-        """Return a specific window."""
-        # XXX docstring missing
-        if rec_ind is None:
-            rec_ind = self.sample_recording()
-        win_ind = self.rng.choice(self.info.iloc[rec_ind]["index"])
-        return win_ind, rec_ind
-
-    @property
-    def n_recordings(self):
-        return super().__len__()
+from torchmetrics.functional.classification import binary_accuracy
+from torchmetrics.functional import f1_score
+from lightning.pytorch.utilities import grad_norm
 
 class SSLTask():
     def __init__(self):
@@ -183,7 +78,7 @@ class RelativePositioning(SSLTask):
         tau_neg = int(sfreq * self.tau_neg_s)
         n_examples = self.n_samples_per_dataset * len(dataset.datasets)
         if dist.is_initialized():
-            sampler = RelativePositioning.DistributedRelativePositioningSampler(dataset.get_metadata(), tau_pos, tau_neg, self.n_samples_per_dataset, self.tau_max, self.same_rec_neg, random_state=self.random_state)
+            sampler = DistributedRelativePositioningSampler(dataset.get_metadata(), tau_pos, tau_neg, self.n_samples_per_dataset, self.tau_max, self.same_rec_neg, random_state=self.random_state)
         else:
             sampler = RelativePositioningSampler(dataset.get_metadata(), tau_pos, tau_neg, n_examples, self.tau_max, self.same_rec_neg, random_state=self.random_state)
 
@@ -212,85 +107,6 @@ class RelativePositioning(SSLTask):
         def return_pair(self, value):
             self._return_pair = value
 
-    class DistributedRelativePositioningSampler(DistributedRecordingSampler):
-        '''
-        Note a difference in argument compared to non-distributed sampler:
-        We provide n_samples_per_dataset so it can compute the number of examples
-        for each subset of recordings accordingly
-        '''
-        def __init__(self, metadata, tau_pos, tau_neg, n_samples_per_dataset, 
-                    tau_max=None, same_rec_neg=True, random_state=None, **kwargs):
-            super().__init__(metadata, random_state=random_state, **kwargs)
-            self.tau_pos = tau_pos
-            self.tau_neg = tau_neg
-            self.tau_max = np.inf if tau_max is None else tau_max
-            self.same_rec_neg = same_rec_neg
-            if not same_rec_neg and self.n_recordings < 2:
-                raise ValueError('More than one recording must be available when '
-                                'using across-recording negative sampling.')
-
-            self.n_examples = n_samples_per_dataset * self.n_recordings
-            print(f"Device {self.rank} - Number of datasets:", self.n_recordings)
-            print(f"Device {self.rank} - Number of samples:", self.n_examples) 
-
-        def _sample_pair(self):
-            """Sample a pair of two windows.
-            """
-            # Sample first window
-            win_ind1, rec_ind1 = self.sample_window()
-            ts1 = self.metadata.iloc[win_ind1]['i_start_in_trial']
-            ts = self.info.iloc[rec_ind1]['i_start_in_trial']
-
-            # Decide whether the pair will be positive or negative
-            pair_type = self.rng.binomial(1, 0.5)
-            win_ind2 = None
-            if pair_type == 0:  # Negative example
-                if self.same_rec_neg:
-                    mask = (
-                        ((ts <= ts1 - self.tau_neg) & (ts >= ts1 - self.tau_max)) |
-                        ((ts >= ts1 + self.tau_neg) & (ts <= ts1 + self.tau_max))
-                    )
-                else:
-                    rec_ind2 = rec_ind1
-                    while rec_ind2 == rec_ind1:
-                        win_ind2, rec_ind2 = self.sample_window()
-            elif pair_type == 1:  # Positive example
-                mask = (ts >= ts1 - self.tau_pos) & (ts <= ts1 + self.tau_pos)
-
-            if win_ind2 is None:
-                mask[ts == ts1] = False  # same window cannot be sampled twice
-                if sum(mask) == 0:
-                    raise NotImplementedError
-                win_ind2 = self.rng.choice(self.info.iloc[rec_ind1]['index'][mask])
-
-            return win_ind1, win_ind2, float(pair_type)
-
-        def presample(self):
-            """Presample examples.
-
-            Once presampled, the examples are the same from one epoch to another.
-            """
-            self.examples = [self._sample_pair() for _ in range(self.n_examples)]
-            return self
-
-        def __iter__(self):
-            """Iterate over pairs.
-
-            Yields
-            ------
-                (int): position of the first window in the dataset.
-                (int): position of the second window in the dataset.
-                (float): 0 for negative pair, 1 for positive pair.
-            """
-            for i in range(self.n_examples):
-                if hasattr(self, 'examples'):
-                    yield self.examples[i]
-                else:
-                    yield self._sample_pair()
-                    
-        def __len__(self):
-            return self.n_examples
-    
     class RelativePositioningLit(LitSSL):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -300,7 +116,7 @@ class RelativePositioning(SSLTask):
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
             # it is independent of forward
-            X, y = batch
+            X, y = batch[0], batch[1]
             x1, x2 = X[0], X[1]
             z1, z2 = self.embed(x1), self.embed(x2)
             z = torch.abs(z1 - z2)
@@ -487,3 +303,90 @@ class VICReg(SSLTask):
 
         return sampler
     
+class Regression(SSLTask):
+    """
+    Simple Regression task to validate the pipeline
+    """
+    def __init__(self):
+        super().__init__()
+            
+    class RegressionLit(LitSSL):
+        def __init__(self, dropout=0.1, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.save_hyperparameters()
+            self.linear_head = nn.Sequential(
+                nn.LazyLinear(1024),
+                nn.ELU(),
+                nn.Dropout(dropout),
+                nn.Linear(1024, 512),
+                nn.ELU(),
+                nn.Dropout(dropout),
+                nn.Linear(512, 1),
+            )
+        
+        def training_step(self, batch, batch_idx):
+            # training_step defines the train loop.
+            # it is independent of forward
+            X, y = batch[0], batch[1]
+            Z = self.embed(X)
+            loss = nn.functional.mse_loss(self.linear_head(Z), y.to(torch.float32))
+
+            self.log("train_loss", loss)
+            return loss
+
+
+    def dataset(self, datasets: List[BaseConcatDataset]):
+        return BaseConcatDataset(datasets)
+    
+    def sampler(self, dataset: BaseConcatDataset):
+        return None
+
+class Classification(SSLTask):
+    """
+    Simple Regression task to validate the pipeline
+    """
+    def __init__(self):
+        super().__init__()
+            
+    class ClassificationLit(LitSSL):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def on_before_optimizer_step(self, optimizer):
+            # Compute the 2-norm for each layer
+            # If using mixed precision, the gradients are already unscaled here
+            norms = grad_norm(self.encoder, norm_type=2)
+            self.log_dict(norms) 
+
+        def training_step(self, batch, batch_idx):
+            self.train()
+            # training_step defines the train loop.
+            # it is independent of forward
+            X, Y = batch[0], batch[1]
+            Z = self.encoder(X)
+            predictions = torch.nn.functional.softmax(Z, dim=1) 
+            probs, predictions = torch.max(predictions, 1) # TODO assume that's the compatible way to cross entropy
+            loss = nn.functional.cross_entropy(Z, Y)
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            self.log('train_accuracy', binary_accuracy(predictions, Y), on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            self.log('train_f1', f1_score(predictions, Y, task='binary'), on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            return loss
+        
+        def validation_step(self, batch, batch_idx):
+            X, Y, _, subjects = batch
+            Z = self.encoder(X)
+            predictions = torch.nn.functional.softmax(Z, dim=1) 
+            probs, predictions = torch.max(predictions, 1) # TODO assume that's the compatible way to cross entropy
+            loss = nn.functional.cross_entropy(Z, Y)
+            self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
+            self.log('val_accuracy', binary_accuracy(predictions, Y), on_epoch=True, prog_bar=True, logger=True)
+            self.log('val_f1', f1_score(predictions, Y, task='binary'), on_epoch=True, prog_bar=True, logger=True)
+
+        def on_validation_epoch_end(self):
+            pass
+
+    def dataset(self, datasets: List[BaseConcatDataset]):
+        return BaseConcatDataset(datasets)
+    
+    def sampler(self, dataset: BaseConcatDataset):
+        return None

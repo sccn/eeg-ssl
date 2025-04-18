@@ -41,8 +41,6 @@ class LitSSL(L.LightningModule):
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
 
-
-
     def validation_step(self, batch, batch_idx):
         X, Y, _, subjects = batch
         z = self.embed(X)
@@ -86,5 +84,5 @@ class LitSSL(L.LightningModule):
                 print(f'val_{type(evaluator).__name__}', val)
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = optim.Adam(self.parameters(), lr=0.001)
         return optimizer
