@@ -33,6 +33,8 @@ class SSLHBNDataModule(L.LightningDataModule):
         datasets:list[str]=None,
         target_label='age',
         overwrite_preprocessed=False,
+        mapping=None,
+        val_release='ds005516',
     ):
         super().__init__()
         self.ssl_task = ssl_task
@@ -46,6 +48,8 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.datasets = datasets if datasets is not None else HBN_DSNUMBERS
         self.bad_subjects = ['NDARBA381JGH', 'NDARUJ292JXV', 'NDARVN772GLC', 'NDARTD794NKQ', 'NDARBX830ZD4', 'NDARHZ923PAH', 'NDARJP304NK1', 'NDARME789TD2', 'NDARUA442ZVF', 'NDARTY128YLU', 'NDARDW550GU6','NDARLD243KRE']
         self.target_label = target_label
+        self.mapping = mapping
+        self.val_release = val_release
         self.save_hyperparameters()
 
     def prepare_data(self):
@@ -56,6 +60,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             savedir = self.cache_dir / f'{dsnumber}_preprocessed'
             if not os.path.exists(savedir) or self.overwrite_preprocessed:
                 ds = HBNDataset(dsnumber, data_path=self.data_dir / dsnumber, tasks=selected_tasks, num_workers=-1, preload=False)
+                ds = BaseConcatDataset([d for d in ds.datasets if d.description['subject'] not in self.bad_subjects])
                 ds = self.preprocess(ds, savedir)
         
     def preprocess(self, ds, savedir):
@@ -63,15 +68,15 @@ class SSLHBNDataModule(L.LightningDataModule):
         os.makedirs(savedir, exist_ok=True)
 
         sampling_rate = 250 # resample to follow the tutorial sampling rate
-        high_cut_hz = 59
         # Factor to convert from V to uV
         factor = 1e6
         preprocessors = [
             Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
             Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
-            Preprocessor('filter', l_freq=None, h_freq=high_cut_hz),
+            Preprocessor('filter', l_freq=0.1, h_freq=59),
             Preprocessor('resample', sfreq=sampling_rate),
             Preprocessor('notch_filter', freqs=(60, 120)),
+            Preprocessor('set_eeg_reference', ref_channels="average"),
             Preprocessor(standard_scale, channel_wise=True),
         ]
         # Transform the data
@@ -80,11 +85,10 @@ class SSLHBNDataModule(L.LightningDataModule):
         return ds
 
     def get_and_filter_dataset(self, dataset_type='train'):
-        valid_release = 'ds005516'
         if dataset_type == 'train':
-            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets if dsnumber != valid_release])
+            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets if dsnumber != self.val_release])
         elif dataset_type == 'valid':
-            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{valid_release}_preprocessed', preload=False)])
+            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{self.val_release}_preprocessed', preload=False)])
 
         filtered_ds = []
 
@@ -112,7 +116,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             all_ds, start_offset_samples=0, stop_offset_samples=None,
             window_size_samples=window_len_samples,
             window_stride_samples=window_stride_samples, drop_last_window=True,
-            preload=False)
+            preload=False, mapping=self.mapping)
         
         return windows_ds
 
@@ -131,19 +135,28 @@ class SSLHBNDataModule(L.LightningDataModule):
 
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)
+        shuffle = True if train_sampler is None else False
         if not dist.is_initialized():
             print(f"Number of datasets: {len(self.train_ds.datasets)}")
-            print(f"Number of examples: {train_sampler.n_examples}")
-        return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, drop_last=True)
+            if train_sampler is None:
+                print(f"Number of examples: {len(self.train_ds)}")
+            else:
+                print(f"Number of examples: {train_sampler.n_examples}")
+        return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
 
     def custom_collate_fn(self, batch):
         from torch.utils.data import default_collate
         # custom collate function to handle subject metadata for validation and test set
         # as specified in setup
         sequences, labels, indices = zip(*batch)
-        dfs = pd.concat(labels)
-        subjects = list(dfs['subject'])
-        labels = default_collate(list(dfs[self.target_label]))
+        if type(labels[0]) == list:
+            labels, subjects = zip(*labels)
+            labels = default_collate(labels)
+            subjects = list(subjects) # TODO temporary fix
+        else:
+            dfs = pd.concat(labels)
+            subjects = list(dfs['subject'])
+            labels = default_collate(list(dfs[self.target_label]))
         return default_collate(sequences), labels, default_collate(indices), subjects
 
     def val_dataloader(self):
@@ -158,10 +171,6 @@ class SSLHBNDataModule(L.LightningDataModule):
     def teardown(self, stage: str):
         # Used to clean-up when the run is finished
         pass
-
-    def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-3)
-        return optimizer 
 
 class HBNDataset(BaseConcatDataset):
     """A class for Health Brain Network datasets.
