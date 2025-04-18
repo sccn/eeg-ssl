@@ -359,7 +359,7 @@ class Classification(SSLTask):
             self.log_dict(norms) 
 
         def training_step(self, batch, batch_idx):
-            self.train()
+            # self.train()
             # training_step defines the train loop.
             # it is independent of forward
             X, Y = batch[0], batch[1]
@@ -378,9 +378,9 @@ class Classification(SSLTask):
             predictions = torch.nn.functional.softmax(Z, dim=1) 
             probs, predictions = torch.max(predictions, 1) # TODO assume that's the compatible way to cross entropy
             loss = nn.functional.cross_entropy(Z, Y)
-            self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
-            self.log('val_accuracy', binary_accuracy(predictions, Y), on_epoch=True, prog_bar=True, logger=True)
-            self.log('val_f1', f1_score(predictions, Y, task='binary'), on_epoch=True, prog_bar=True, logger=True)
+            self.log("val_Classifier/loss", loss, on_epoch=True, prog_bar=True, logger=True)
+            self.log('val_Classifier/accuracy', binary_accuracy(predictions, Y), on_epoch=True, prog_bar=True, logger=True)
+            self.log('val_Classifier/f1', f1_score(predictions, Y, task='binary'), on_epoch=True, prog_bar=True, logger=True)
 
         def on_validation_epoch_end(self):
             pass
