@@ -1,12 +1,11 @@
 # lightning.pytorch==2.5.0
 seed_everything: 0
 trainer:
-  deterministic: true
   accelerator: auto
   strategy: auto
   devices: auto
   num_nodes: 1
-  precision: 16-mixed
+  precision: null
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
@@ -45,9 +44,8 @@ trainer:
   callbacks:
     class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
-      monitor: val_Regressor/concordance
-      mode: max
-      save_top_k: 2
+      monitor: val_Regressor/mse
+      mode: min
       save_last: true
       every_n_train_steps: 50
       save_weights_only: false
@@ -89,10 +87,13 @@ model:
   class_path: libs.ssl_task.Regression.RegressionLit
   init_args:
     encoder:
-      class_path: libs.ssl_model.VGGSSL
+      class_path: braindecode.models.ShallowFBCSPNet
+      init_args:
+        n_outputs: 1
+        n_chans: 129
+        n_times: 500
     encoder_emb_size: 1024
     emb_size: 100
-    dropout: 0.5
 data:
   ssl_task:
       class_path: libs.ssl_task.Regression
@@ -113,7 +114,7 @@ data:
   - ds005514
   - ds005515
   - ds005516
-  target_label: p_factor
+  target_label: age
   overwrite_preprocessed: false
 optimizer: null
 lr_scheduler: null

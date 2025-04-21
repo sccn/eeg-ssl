@@ -15,22 +15,22 @@ class LitSSL(L.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.encoder = encoder
-        self.emb_size = emb_size
-        encoder_expected_emb_size = 1024
-        if encoder_emb_size != encoder_expected_emb_size:
-            projection_layer = nn.Sequential(
-                nn.Dropout(dropout),
-                nn.Linear(encoder_emb_size, encoder_expected_emb_size),
-            )
-        else:
-            projection_layer = nn.Identity()
+        # self.emb_size = emb_size
+        # encoder_expected_emb_size = 1024
+        # if encoder_emb_size != encoder_expected_emb_size:
+        #     projection_layer = nn.Sequential(
+        #         nn.Dropout(dropout),
+        #         nn.Linear(encoder_emb_size, encoder_expected_emb_size),
+        #     )
+        # else:
+        #     projection_layer = nn.Identity()
             
-        self.embedder = nn.Sequential(
-            projection_layer,
-            nn.Dropout(dropout),
-            nn.Linear(encoder_expected_emb_size, emb_size),
-            nn.Dropout(dropout)
-        )
+        # self.embedder = nn.Sequential(
+        #     projection_layer,
+        #     nn.Dropout(dropout),
+        #     nn.Linear(encoder_expected_emb_size, emb_size),
+        #     nn.Dropout(dropout)
+        # )
             
         evaluators = ['RankMe', 'Regressor']
         self.evaluators = [globals()[evaluator]() for evaluator in evaluators]
@@ -43,6 +43,11 @@ class LitSSL(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
+    
+    def on_validation_start(self):
+        # print(self.training)
+        # print(self.eval)
+        self.eval()
 
     def validation_step(self, batch, batch_idx):
         X, Y, _, subjects = batch
