@@ -7,10 +7,11 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from .ssl_utils import LitSSL
+from .evaluation import Regressor, get_subjects_labels, get_subject_predictions
 from torchmetrics.functional.classification import binary_accuracy
 from torchmetrics.functional import f1_score
 from lightning.pytorch.utilities import grad_norm
-from torchmetrics.functional.regression import concordance_corrcoef, r2_score, normalized_root_mean_squared_error, mean_squared_error
+from torchmetrics.functional.regression import concordance_corrcoef, r2_score, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error
 
 class SSLTask():
     def __init__(self):
@@ -290,6 +291,7 @@ class Regression(SSLTask):
             #     nn.Dropout(dropout),
             #     nn.Linear(512, 1),
             # )
+            self.evaluator = Regressor()
         
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
@@ -310,21 +312,29 @@ class Regression(SSLTask):
             return loss
 
         def validation_step(self, batch, batch_idx):
+            X, Y, subjects = batch[0], batch[1], batch[3]
+            Y = Y.to(torch.float32)
+            Z = torch.squeeze(self.encoder(X))
+            self.evaluator.update((Z, Y, subjects))
+        
+        def on_validation_epoch_end(self):
+            scores = self.evaluator.compute()
+            for k, v in scores.items():
+                    self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
+
+        def validation_step_not_metrics(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X))
             loss = nn.functional.mse_loss(Z, Y)
             self.log(f'val_Regressor/mse', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-            metrics = ['R2',    'concordance',      'NRMSE',                        'mse']
-            fcns = [r2_score, concordance_corrcoef, normalized_root_mean_squared_error, mean_squared_error]
+            metrics = ['R2',    'concordance',      'NRMSE',                        'mse',                  'mae']
+            fcns = [r2_score, concordance_corrcoef, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error]
             for metric, fcn in zip(metrics, fcns):
                 score = fcn(Z, Y)
                 self.log(f'val_Regressor/{metric}', score, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
-        def on_validation_epoch_end(self):
-            pass
-
     def dataset(self, datasets: List[BaseConcatDataset]):
         return BaseConcatDataset(datasets)
     
