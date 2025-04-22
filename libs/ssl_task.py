@@ -279,9 +279,8 @@ class Regression(SSLTask):
         super().__init__()
             
     class RegressionLit(LitSSL):
-        def __init__(self, dropout=0.1, *args, **kwargs):
+        def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.save_hyperparameters()
             # self.linear_head = nn.Sequential(
             #     nn.LazyLinear(1024),
             #     nn.ELU(),
@@ -295,11 +294,19 @@ class Regression(SSLTask):
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
             # it is independent of forward
-            X, y = batch[0], batch[1]
+            X, Y = batch[0], batch[1]
+            Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X)) 
-            loss = nn.functional.mse_loss(Z, y.to(torch.float32))
+            loss = nn.functional.mse_loss(Z, Y.to(torch.float32))
 
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+
+            metrics = ['R2',    'concordance']
+            fcns = [r2_score, concordance_corrcoef]
+            for metric, fcn in zip(metrics, fcns):
+                score = fcn(Z, Y)
+                self.log(f'train_Regressor/{metric}', score, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
             return loss
 
         def validation_step(self, batch, batch_idx):

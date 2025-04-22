@@ -92,12 +92,11 @@ trainer:
 model:
   class_path: libs.ssl_task.Classification.ClassificationLit
   init_args:
-    encoder:
-      class_path: braindecode.models.ShallowFBCSPNet
-      init_args:
-        n_outputs: 2
-        n_chans: 129
-        n_times: 500
+    encoder_path: braindecode.models.ShallowFBCSPNet
+    encoder_kwargs:
+      n_outputs: 2
+      n_chans: 129
+      n_times: 500
     encoder_emb_size: 1024
     emb_size: 100
     dropout: 0.1
