@@ -75,7 +75,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             Preprocessor('filter', l_freq=0.1, h_freq=59),
             Preprocessor('resample', sfreq=sampling_rate),
             Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
-            Preprocessor('pick', picks=np.arange(128)),  # discard Cz
+            Preprocessor('drop_channels', ch_names=['Cz']),  # discard Cz
             Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV    
             Preprocessor(scale, channel_wise=True), # normalization for deep learning
         ]
