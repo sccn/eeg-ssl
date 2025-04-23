@@ -64,20 +64,20 @@ class SSLHBNDataModule(L.LightningDataModule):
                 ds = self.preprocess(ds, savedir)
         
     def preprocess(self, ds, savedir):
-        from sklearn.preprocessing import scale as standard_scale
+        from sklearn.preprocessing import scale
         os.makedirs(savedir, exist_ok=True)
 
         sampling_rate = 250 # resample to follow the tutorial sampling rate
-        # Factor to convert from V to uV
+        # Factor to convert from uV to V
         factor = 1e6
         preprocessors = [
-            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV
-            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+            Preprocessor('notch_filter', freqs=(60, 120)),    
             Preprocessor('filter', l_freq=0.1, h_freq=59),
             Preprocessor('resample', sfreq=sampling_rate),
-            Preprocessor('notch_filter', freqs=(60, 120)),
-            Preprocessor('set_eeg_reference', ref_channels="average"),
-            Preprocessor(standard_scale, channel_wise=True),
+            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+            Preprocessor('pick', picks=np.arange(128)),  # discard Cz
+            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV    
+            Preprocessor(scale, channel_wise=True), # normalization for deep learning
         ]
         # Transform the data
         preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=-1)
