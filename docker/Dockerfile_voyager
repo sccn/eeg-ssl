@@ -12,7 +12,12 @@ RUN pip3 install --no-cache-dir \
     "lightning[pytorch-extra]" \
     torchmetrics==1.6.1 \
     wandb \
-    litserve
+    litserve \
+    mne-bids
+
+RUN pip3 install --ignore-installed \
+    torchvision \
+    torchaudio
 
 # Run hl-smi as an initial command and specify the script
 CMD ["hl-smi"]
