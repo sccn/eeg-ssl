@@ -19,7 +19,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 import torch.distributed as dist
 from .ssl_task import *
-
+from eegdash import EEGDashDataset
 import lightning as L
 
 class SSLHBNDataModule(L.LightningDataModule):
@@ -59,7 +59,8 @@ class SSLHBNDataModule(L.LightningDataModule):
         for dsnumber in self.datasets:
             savedir = self.cache_dir / f'{dsnumber}_preprocessed'
             if not os.path.exists(savedir) or self.overwrite_preprocessed:
-                ds = HBNDataset(dsnumber, data_path=self.data_dir / dsnumber, tasks=selected_tasks, num_workers=-1, preload=False)
+                # ds = HBNDataset(dsnumber, data_path=self.data_dir / dsnumber, tasks=selected_tasks, num_workers=-1, preload=False)
+                ds = EEGDashDataset({'dataset': dsnumber, 'task': 'RestingState'}, cache_dir=self.data_dir, description_fields=['subject', 'session', 'run', 'task', 'age', 'gender', 'sex', 'p_factor', 'externalizing', 'internalizing', 'attention'])
                 ds = BaseConcatDataset([d for d in ds.datasets if d.description['subject'] not in self.bad_subjects])
                 ds = self.preprocess(ds, savedir)
         
@@ -70,17 +71,20 @@ class SSLHBNDataModule(L.LightningDataModule):
         sampling_rate = 250 # resample to follow the tutorial sampling rate
         # Factor to convert from uV to V
         factor = 1e6
+        channels = ds.datasets[0].raw.info['ch_names']
         preprocessors = [
+            Preprocessor('set_channel_types', mapping=dict(zip(channels, ['eeg']*len(channels)))),
             Preprocessor('notch_filter', freqs=(60, 120)),    
             Preprocessor('filter', l_freq=0.1, h_freq=59),
             Preprocessor('resample', sfreq=sampling_rate),
-            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
-            Preprocessor('drop_channels', ch_names=['Cz']),  # discard Cz
-            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV    
-            Preprocessor(scale, channel_wise=True), # normalization for deep learning
+            Preprocessor('set_eeg_reference', ref_channels=['Cz']),
+            # Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+            # Preprocessor('drop_channels', ch_names=['Cz']),  # discard Cz
+            # Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV    
+            # Preprocessor(scale, channel_wise=True), # normalization for deep learning
         ]
         # Transform the data
-        preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=-1)
+        preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=1)
 
         return ds
 
@@ -127,7 +131,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             valid_ds = self.get_and_filter_dataset('valid')
             assert set(train_ds.description['subject']).intersection(set(valid_ds.description['subject'])) == set(), "Train and valid datasets should not overlap"
 
-            self.train_ds = self.ssl_task.dataset(train_ds.datasets)
+            self.train_ds = self.ssl_task.dataset(datasets=train_ds.datasets)
             self.valid_ds = valid_ds
         elif stage == 'test':
             valid_ds = self.get_and_filter_dataset('valid')
@@ -136,13 +140,21 @@ class SSLHBNDataModule(L.LightningDataModule):
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)
         shuffle = True if train_sampler is None else False
+        if train_sampler:
+            dataloader = DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
+        else:
+            dataloader = DataLoader(self.train_ds, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
         if not dist.is_initialized():
             print(f"Number of datasets: {len(self.train_ds.datasets)}")
             if train_sampler is None:
                 print(f"Number of examples: {len(self.train_ds)}")
             else:
                 print(f"Number of examples: {train_sampler.n_examples}")
-        return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
+        else:
+            # print(f"Number of datasets for rank {dist.get_rank()}: {dataloader.sampler.n_recordings}")
+            print(f"Number of batches for rank {dist.get_rank()}: {len(dataloader)}")
+            print(f"Number of examples for rank {dist.get_rank()}: {len(dataloader.sampler) // dist.get_world_size()}")
+        return dataloader
 
     def custom_collate_fn(self, batch):
         from torch.utils.data import default_collate
@@ -160,10 +172,10 @@ class SSLHBNDataModule(L.LightningDataModule):
         return default_collate(sequences), labels, default_collate(indices), subjects
 
     def val_dataloader(self):
-        return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers, shuffle=True)
+        return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
 
     def test_dataloader(self):
-        return DataLoader(self.test_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers, shuffle=True)
+        return DataLoader(self.test_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
 
     def predict_dataloader(self):
         pass

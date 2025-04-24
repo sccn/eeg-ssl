@@ -303,8 +303,8 @@ class Regression(SSLTask):
 
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
-            metrics = ['R2',    'concordance']
-            fcns = [r2_score, concordance_corrcoef]
+            metrics = ['R2',    'concordance',      'mse',                'mae']
+            fcns = [r2_score, concordance_corrcoef, mean_squared_error, mean_absolute_error]
             for metric, fcn in zip(metrics, fcns):
                 score = fcn(Z, Y)
                 self.log(f'train_Regressor/{metric}', score, on_step=False, on_epoch=True, prog_bar=True, logger=True)
@@ -320,7 +320,7 @@ class Regression(SSLTask):
         def on_validation_epoch_end(self):
             scores = self.evaluator.compute()
             for k, v in scores.items():
-                    self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
+                self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True, sync_dist=True)
 
         def validation_step_not_metrics(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
