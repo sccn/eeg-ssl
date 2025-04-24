@@ -5,19 +5,43 @@ FROM vault.habana.ai/gaudi-docker/1.15.1/ubuntu22.04/habanalabs/pytorch-installe
 # Install dependencies  
 RUN pip3 install --no-cache-dir \
     numpy==1.26.4 \
-    git+https://github.com/dungscout96/mne-python.git \
-    git+https://github.com/braindecode/braindecode.git \
     tensorboard \
     lightning==2.5.0 \
     "lightning[pytorch-extra]" \
     torchmetrics==1.6.1 \
     wandb \
     litserve \
-    mne-bids
+    mne-bids \
+    joblib \
+    einops \
+    wfdb \
+    h5py!=3.12.0 \
+    docstring_inheritance \
+    torchinfo \
+    axial-positional-embedding \
+    linformer>=0.1.0 \
+    packaging \
+    scikit-learn \
+    skorch \
+    pymongo \
+    numba \
+    pyarrow \
+    tqdm \
+    pymatreader \
+    pybids \
+    pynwb \
+    s3fs \
+    python-dotenv \
+    xarray
 
-RUN pip3 install --ignore-installed \
-    torchvision \
-    torchaudio
+RUN pip3 install --no-deps \
+    git+https://github.com/sccn/EEGDash.git \
+    colt5-attention>=0.10.14 \
+    product-key-memory>=0.1.5 \
+    hyper-connections>=0.1.8 \
+    local-attention \
+    linear_attention_transformer \
+    git+https://github.com/braindecode/braindecode.git
 
 # Run hl-smi as an initial command and specify the script
-CMD ["hl-smi"]
+# CMD ["hl-smi"]
