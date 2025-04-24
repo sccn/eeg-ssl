@@ -140,13 +140,21 @@ class SSLHBNDataModule(L.LightningDataModule):
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)
         shuffle = True if train_sampler is None else False
+        if train_sampler:
+            dataloader = DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
+        else:
+            dataloader = DataLoader(self.train_ds, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
         if not dist.is_initialized():
             print(f"Number of datasets: {len(self.train_ds.datasets)}")
             if train_sampler is None:
                 print(f"Number of examples: {len(self.train_ds)}")
             else:
                 print(f"Number of examples: {train_sampler.n_examples}")
-        return DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
+        else:
+            # print(f"Number of datasets for rank {dist.get_rank()}: {dataloader.sampler.n_recordings}")
+            print(f"Number of batches for rank {dist.get_rank()}: {len(dataloader)}")
+            print(f"Number of examples for rank {dist.get_rank()}: {len(dataloader.sampler) // dist.get_world_size()}")
+        return dataloader
 
     def custom_collate_fn(self, batch):
         from torch.utils.data import default_collate
@@ -164,10 +172,10 @@ class SSLHBNDataModule(L.LightningDataModule):
         return default_collate(sequences), labels, default_collate(indices), subjects
 
     def val_dataloader(self):
-        return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers, shuffle=True)
+        return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
 
     def test_dataloader(self):
-        return DataLoader(self.test_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers, shuffle=True)
+        return DataLoader(self.test_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
 
     def predict_dataloader(self):
         pass

@@ -46,7 +46,8 @@ class Regressor(Metric):
         super().__init__(**kwargs)
         self.add_state("predictions", default=[], dist_reduce_fx='cat')
         self.add_state("labels", default=[], dist_reduce_fx='cat')
-        self.subjects = []
+        self.add_state("subjects", default=[], dist_reduce_fx="cat")
+        # self.subjects = []
 
     def update(self, data:tuple) -> None:
         predictions = data[0]
@@ -54,22 +55,33 @@ class Regressor(Metric):
         subjects = data[2]
         self.predictions.append(predictions)
         self.labels.append(labels)
-        self.subjects.extend(subjects)
+        subjects_encoded = encode_subjects(subjects).to(device=self.device)
+        # print('encoded subjects', subjects_encoded)
+        self.subjects.append(subjects_encoded)
+        # self.subjects.extend(subjects)
 
     def compute(self) -> torch.Tensor:
         preds = dim_zero_cat(self.predictions).float()
         labels = dim_zero_cat(self.labels).float()
-
+        subjects_encoded = dim_zero_cat(self.subjects).float()
+        
+        # print('preds shape', preds.shape)
+        # print('labels shape', labels.shape)
+        # print('subjects shape', subjects_encoded.shape)
+        # print('encoded subjects', subjects_encoded)
         # compute sample-level metrics
         metrics = ['R2',    'concordance',      'NRMSE',                        'mse',                  'mae']
         fcns = [r2_score, concordance_corrcoef, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error]
         scores = {}
         for metric, fcn in zip(metrics, fcns):
             scores[metric] = fcn(preds, labels)
+
+        subjects = decode_subjects(subjects_encoded) # decode 
+        # print('decoded subjects', subjects)
         
         # compute subject-level metrics
-        subject_labels = get_subjects_labels(self.subjects, labels)
-        subject_predictions = get_subject_predictions(self.subjects, preds)
+        subject_labels = get_subjects_labels(subjects, labels)
+        subject_predictions = get_subject_predictions(subjects, preds)
         subject_labels_predictions = []
         for subject, label in subject_labels.items():
             subject_labels_predictions.append((subject, label, subject_predictions[subject])) # guarantee the same subject for label and prediction
@@ -94,7 +106,16 @@ class Regressor(Metric):
         
         return scores
 
+def encode_subjects(subjects):
+    return torch.tensor([[ord(ch) for ch in subj] for subj in subjects])
+
+def decode_subjects(subjects):
+    # print('subjects shape to be decoded', subjects.shape)
+    return [''.join((chr(int(subjects[s,n].item())) for n in range(subjects.shape[1]))) for s in range(subjects.shape[0])]
+    
 def get_subjects_labels(subjects, labels):
+    # print('subject len', len(subjects))
+    # print('label shape', labels.shape[0])
     assert len(subjects) == labels.shape[0]
     subject_labels = defaultdict(list)
     for i, subject in enumerate(subjects):

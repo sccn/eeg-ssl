@@ -320,7 +320,7 @@ class Regression(SSLTask):
         def on_validation_epoch_end(self):
             scores = self.evaluator.compute()
             for k, v in scores.items():
-                    self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
+                self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True, sync_dist=True)
 
         def validation_step_not_metrics(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
