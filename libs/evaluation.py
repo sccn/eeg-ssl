@@ -73,24 +73,24 @@ class Regressor(Metric):
         subject_labels_predictions = []
         for subject, label in subject_labels.items():
             subject_labels_predictions.append((subject, label, subject_predictions[subject])) # guarantee the same subject for label and prediction
-
-        subject_labels = torch.from_numpy(np.array([label for _, label, _ in subject_labels_predictions]))
-        subject_predictions_with_mean = torch.from_numpy(np.array([pred['mean'] for _, _, pred in subject_labels_predictions]))
-        subject_predictions_with_median = torch.from_numpy(np.array([pred['median'] for _, _, pred in subject_labels_predictions]))
-        subject_predictions_iqr = np.array([pred['IQR'] for _, _, pred in subject_labels_predictions])
-        subject_predictions_std = np.array([pred['std'] for _, _, pred in subject_labels_predictions])
-        
-        for metric, fcn in zip(metrics, fcns):
-            scores[f"subject_with_mean_{metric}"] = fcn(subject_predictions_with_mean, subject_labels)
-            scores[f"subject_with_median_{metric}"] = fcn(subject_predictions_with_median, subject_labels)
-        scores['subject_iqr_mean'] = np.mean(subject_predictions_iqr)
-        scores['subject_iqr_median'] = np.median(subject_predictions_iqr)
-        scores['subject_iqr_std'] = np.std(subject_predictions_iqr)
-        scores['subject_iqr_iqr'] = np.quantile(subject_predictions_iqr, 0.75) - np.quantile(subject_predictions_iqr, 0.25)
-        scores['subject_std_mean'] = np.mean(subject_predictions_std)
-        scores['subject_std_median'] = np.median(subject_predictions_std)
-        scores['subject_std_std'] = np.std(subject_predictions_std)
-        scores['subject_std_iqr'] = np.quantile(subject_predictions_std, 0.75) - np.quantile(subject_predictions_std, 0.25)
+        if len(subject_labels_predictions) > 1:
+            subject_labels = torch.from_numpy(np.array([label for _, label, _ in subject_labels_predictions]))
+            subject_predictions_with_mean = torch.from_numpy(np.array([pred['mean'] for _, _, pred in subject_labels_predictions]))
+            subject_predictions_with_median = torch.from_numpy(np.array([pred['median'] for _, _, pred in subject_labels_predictions]))
+            subject_predictions_iqr = np.array([pred['IQR'] for _, _, pred in subject_labels_predictions])
+            subject_predictions_std = np.array([pred['std'] for _, _, pred in subject_labels_predictions])
+            
+            for metric, fcn in zip(metrics, fcns):
+                scores[f"subject_with_mean_{metric}"] = fcn(subject_predictions_with_mean, subject_labels)
+                scores[f"subject_with_median_{metric}"] = fcn(subject_predictions_with_median, subject_labels)
+            scores['subject_iqr_mean'] = np.mean(subject_predictions_iqr)
+            scores['subject_iqr_median'] = np.median(subject_predictions_iqr)
+            scores['subject_iqr_std'] = np.std(subject_predictions_iqr)
+            scores['subject_iqr_iqr'] = np.quantile(subject_predictions_iqr, 0.75) - np.quantile(subject_predictions_iqr, 0.25)
+            scores['subject_std_mean'] = np.mean(subject_predictions_std)
+            scores['subject_std_median'] = np.median(subject_predictions_std)
+            scores['subject_std_std'] = np.std(subject_predictions_std)
+            scores['subject_std_iqr'] = np.quantile(subject_predictions_std, 0.75) - np.quantile(subject_predictions_std, 0.25)
         
         return scores
 

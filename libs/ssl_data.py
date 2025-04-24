@@ -19,7 +19,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 import torch.distributed as dist
 from .ssl_task import *
-
+from eegdash import EEGDashDataset
 import lightning as L
 
 class SSLHBNDataModule(L.LightningDataModule):
@@ -59,7 +59,8 @@ class SSLHBNDataModule(L.LightningDataModule):
         for dsnumber in self.datasets:
             savedir = self.cache_dir / f'{dsnumber}_preprocessed'
             if not os.path.exists(savedir) or self.overwrite_preprocessed:
-                ds = HBNDataset(dsnumber, data_path=self.data_dir / dsnumber, tasks=selected_tasks, num_workers=-1, preload=False)
+                # ds = HBNDataset(dsnumber, data_path=self.data_dir / dsnumber, tasks=selected_tasks, num_workers=-1, preload=False)
+                ds = EEGDashDataset({'dataset': dsnumber, 'task': 'RestingState'}, cache_dir=self.data_dir, description_fields=['subject', 'session', 'run', 'task', 'age', 'gender', 'sex', 'p_factor', 'externalizing', 'internalizing', 'attention'])
                 ds = BaseConcatDataset([d for d in ds.datasets if d.description['subject'] not in self.bad_subjects])
                 ds = self.preprocess(ds, savedir)
         
@@ -70,17 +71,20 @@ class SSLHBNDataModule(L.LightningDataModule):
         sampling_rate = 250 # resample to follow the tutorial sampling rate
         # Factor to convert from uV to V
         factor = 1e6
+        channels = ds.datasets[0].raw.info['ch_names']
         preprocessors = [
+            Preprocessor('set_channel_types', mapping=dict(zip(channels, ['eeg']*len(channels)))),
             Preprocessor('notch_filter', freqs=(60, 120)),    
             Preprocessor('filter', l_freq=0.1, h_freq=59),
             Preprocessor('resample', sfreq=sampling_rate),
-            Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
-            Preprocessor('drop_channels', ch_names=['Cz']),  # discard Cz
-            Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV    
-            Preprocessor(scale, channel_wise=True), # normalization for deep learning
+            Preprocessor('set_eeg_reference', ref_channels=['Cz']),
+            # Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
+            # Preprocessor('drop_channels', ch_names=['Cz']),  # discard Cz
+            # Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV    
+            # Preprocessor(scale, channel_wise=True), # normalization for deep learning
         ]
         # Transform the data
-        preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=-1)
+        preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=1)
 
         return ds
 
@@ -127,7 +131,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             valid_ds = self.get_and_filter_dataset('valid')
             assert set(train_ds.description['subject']).intersection(set(valid_ds.description['subject'])) == set(), "Train and valid datasets should not overlap"
 
-            self.train_ds = self.ssl_task.dataset(train_ds.datasets)
+            self.train_ds = self.ssl_task.dataset(datasets=train_ds.datasets)
             self.valid_ds = valid_ds
         elif stage == 'test':
             valid_ds = self.get_and_filter_dataset('valid')
