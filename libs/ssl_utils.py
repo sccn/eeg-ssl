@@ -14,7 +14,9 @@ class LitSSL(L.LightningModule):
         encoder_kwargs: Optional[Union[dict[str, Any], dict[str, dict[str, Any]]]] = None,
         encoder_emb_size=1024,
         emb_size=100, 
-        dropout=0.5
+        dropout=0.5,
+        learning_rate=0.005,
+        seed=0
     ):
         super().__init__()
         self.encoder = instantiate_module(encoder_path, encoder_kwargs)
@@ -40,7 +42,8 @@ class LitSSL(L.LightningModule):
         #     nn.Linear(encoder_expected_emb_size, emb_size),
         #     nn.Dropout(dropout)
         # )
-            
+        self.learning_rate = learning_rate
+
         evaluators = ['RankMe', 'Regressor']
         self.evaluators = [globals()[evaluator]() for evaluator in evaluators]
 
@@ -109,7 +112,7 @@ class LitSSL(L.LightningModule):
         self.log_dict(norms)
         
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=0.005)
+        optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
 
 ############### Helper functions ###############
