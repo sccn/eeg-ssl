@@ -5,6 +5,8 @@ from .evaluation import RankMe, Regressor
 import lightning as L
 import importlib
 import pathlib
+from lightning.pytorch.utilities import grad_norm
+import braindecode
 
 class LitSSL(L.LightningModule):
     def __init__(self, 
@@ -17,6 +19,11 @@ class LitSSL(L.LightningModule):
         super().__init__()
         self.encoder = instantiate_module(encoder_path, encoder_kwargs)
         print(self.encoder)
+        if isinstance(self.encoder, braindecode.models.deep4.Deep4Net):
+            print('set bias')
+            with torch.no_grad():
+                self.encoder.final_layer.conv_classifier.bias.copy_(torch.tensor(0.04))
+
         # self.emb_size = emb_size
         # encoder_expected_emb_size = 1024
         # if encoder_emb_size != encoder_expected_emb_size:
@@ -95,8 +102,14 @@ class LitSSL(L.LightningModule):
                 self.log(f'val_{type(evaluator).__name__}', val)
                 print(f'val_{type(evaluator).__name__}', val)
 
+    def on_before_optimizer_step(self, optimizer):
+        # Compute the 2-norm for each layer
+        # If using mixed precision, the gradients are already unscaled here
+        norms = grad_norm(self.encoder, norm_type=2)
+        self.log_dict(norms)
+        
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=0.004)
+        optimizer = optim.Adam(self.parameters(), lr=0.005)
         return optimizer
 
 ############### Helper functions ###############
