@@ -291,28 +291,13 @@ class Regression(SSLTask):
             #     nn.Dropout(dropout),
             #     nn.Linear(512, 1),
             # )
+
             self.evaluator = Regressor()
-            
-        def scale(self, data):
-            '''
-            Custom scaling using window statistics ignoring Cz reference
-            '''
-            assert data.ndim == 3, "Data should be 3D"
-            assert data.shape[1] == 129, "Data should have 129 channels"
-            assert torch.allclose(data[:,-1,:], torch.tensor(0, dtype=data.dtype)), "Last channel should be Cz reference"
-            data_noCz = data[:,:-1,:]  # remove Cz reference
-            assert data_noCz.shape[1] == 128, "Data should have 128 channels after removing Cz reference"
-            data_mean = torch.mean(data_noCz, dim=(1,2), keepdim=True)  # mean over F
-            data_std = torch.std(data_noCz, dim=(1,2), keepdim=True)  # std over F
-            # standard scale to 0 mean and 1 std using statistics of the entire window
-            data = (data - data_mean) / data_std # normalize preserving batch dim
-            return data
             
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
             # it is independent of forward
             X, Y = batch[0], batch[1]
-            X = self.scale(X)
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X)) 
             loss = nn.functional.mse_loss(Z, Y.to(torch.float32))

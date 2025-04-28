@@ -64,6 +64,23 @@ class SSLHBNDataModule(L.LightningDataModule):
                 ds = BaseConcatDataset([d for d in ds.datasets if d.description['subject'] not in self.bad_subjects])
                 ds = self.preprocess(ds, savedir)
         
+    
+    def window_scale(self, data):
+        '''
+        Legacy reference
+        Custom scaling using window statistics ignoring Cz reference
+        '''
+        assert data.ndim == 3, "Data should be 3D"
+        assert data.shape[1] == 129, "Data should have 129 channels"
+        assert torch.allclose(data[:,-1,:], torch.tensor(0, dtype=data.dtype)), "Last channel should be Cz reference"
+        data_noCz = data[:,:-1,:]  # remove Cz reference
+        assert data_noCz.shape[1] == 128, "Data should have 128 channels after removing Cz reference"
+        data_mean = torch.mean(data_noCz, dim=(1,2), keepdim=True)  # mean over F
+        data_std = torch.std(data_noCz, dim=(1,2), keepdim=True)  # std over F
+        # standard scale to 0 mean and 1 std using statistics of the entire window
+        data = (data - data_mean) / data_std # normalize preserving batch dim
+        return data
+            
     def preprocess(self, ds, savedir):
         from sklearn.preprocessing import scale
         os.makedirs(savedir, exist_ok=True)
@@ -102,8 +119,8 @@ class SSLHBNDataModule(L.LightningDataModule):
         for ds in all_ds.datasets:
             # filter nan target label
             if not (pd.isna(ds.description[self.target_label]) or ds.description['subject'] in self.bad_subjects):
-                if len(ds.raw.ch_names) < 129:
-                    raise ValueError(f"Dataset {ds.description['subject']} has less than 129 channels")
+                if len(ds.raw.ch_names) < 128:
+                    raise ValueError(f"Dataset {ds.description['subject']} has less than 128 channels")
                 # add subject info for validation
                 target_labels = [self.target_label, 'subject'] if dataset_type == 'valid' else self.target_label
                 # set desired label target
