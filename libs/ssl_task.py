@@ -178,7 +178,6 @@ class SimCLR(SSLTask):
             super().__init__(list_of_ds)
 
         def __getitem__(self, index):
-            # print('index', index)
             ind1, ind2 = index
             return (super().__getitem__(ind1)[0],
                     super().__getitem__(ind2)[0])
@@ -203,23 +202,19 @@ class SimCLR(SSLTask):
             )
             self.evaluator = RankMe()
         
-        def contrastive_loss(self, hidden1, hidden2, temperature=0.1, LARGE_NUM=1e9):
+        def contrastive_loss(self, hidden1, hidden2, temperature=0.1):
             hidden1, hidden2 = torch.nn.functional.normalize(hidden1, dim=1, p=2), torch.nn.functional.normalize(hidden2, dim=1, p=2)
             batch_size = hidden1.shape[0]
-            labels = torch.nn.functional.one_hot(torch.arange(batch_size), batch_size * 2).to(hidden1.device)
-            labels[:,batch_size:] = labels[:,:batch_size]
-            labels = labels.float()  # Convert to float for loss calculation
-
-            assert torch.allclose(torch.sum(labels, dim=1), torch.ones_like(torch.sum(labels, dim=1))*2)
             masks = torch.nn.functional.one_hot(torch.arange(batch_size), batch_size).bool().to(hidden1.device)
             logits_aa = torch.matmul(hidden1, hidden1.T) / temperature
-            # logits_aa = logits_aa.masked_fill(masks == 1, float('-inf'))
+            logits_aa = logits_aa.masked_fill(masks == 1, float('-inf')) # self-embeddings should not contribute to negative loss
             logits_bb = torch.matmul(hidden2, hidden2.T) / temperature
-            # logits_bb = logits_bb.masked_fill(masks == 1, float('-inf'))
+            logits_bb = logits_bb.masked_fill(masks == 1, float('-inf')) # self-embeddings should not contribute to negative loss
             logits_ab = torch.matmul(hidden1, hidden2.T) / temperature
             logits_ba = torch.matmul(hidden2, hidden1.T) / temperature
-            loss_a = torch.nn.functional.cross_entropy(torch.cat([logits_ab, logits_aa], dim=1), labels)
-            loss_b = torch.nn.functional.cross_entropy(torch.cat([logits_ba, logits_bb], dim=1), labels)
+
+            loss_a = torch.nn.functional.cross_entropy(torch.cat([logits_ab, logits_aa], dim=1), torch.arange(batch_size).to(hidden1.device))
+            loss_b = torch.nn.functional.cross_entropy(torch.cat([logits_ba, logits_bb], dim=1), torch.arange(batch_size).to(hidden1.device))
             loss = (loss_a + loss_b) / 2
 
             return loss

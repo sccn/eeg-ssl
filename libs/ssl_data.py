@@ -152,7 +152,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             valid_ds = self.get_and_filter_dataset('valid')
             assert set(train_ds.description['subject']).intersection(set(valid_ds.description['subject'])) == set(), "Train and valid datasets should not overlap"
 
-            self.train_ds = self.ssl_task.dataset(datasets=train_ds.datasets)
+            self.train_ds = train_ds
             self.valid_ds = valid_ds
         elif stage == 'test':
             valid_ds = self.get_and_filter_dataset('valid')
@@ -163,6 +163,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         shuffle = True if train_sampler is None else False
         if train_sampler:
             print(f"Using {type(train_sampler).__name__} sampler with shuffle {shuffle} for training")
+            self.train_ds = self.ssl_task.dataset(datasets=self.train_ds.datasets)
             dataloader = DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
         else:
             dataloader = DataLoader(self.train_ds, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
