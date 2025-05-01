@@ -16,7 +16,7 @@ trainer:
       dir: null
       id: null
       anonymous: null
-      project: eeg-ssl
+      project: hbn-regression
       log_model: true
       experiment: null
       prefix: ''
@@ -48,11 +48,12 @@ trainer:
       mode: min
       save_last: true
       # every_n_train_steps: 50
+      save_on_train_epoch_end: true
       save_weights_only: false
       auto_insert_metric_name: true
       filename: "{epoch:03d}-{train_Regressor_mae:.3f}"
   fast_dev_run: false
-  max_epochs: 250
+  max_epochs: 21
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -89,13 +90,11 @@ model:
     encoder_path: braindecode.models.Deep4Net
     encoder_kwargs:
       n_outputs: 1
-      n_chans: 129
+      n_chans: 128
       n_times: 500
       activation_first_conv_nonlin: torch.nn.ELU
       activation_later_conv_nonlin: torch.nn.ELU
-    encoder_emb_size: 1024
-    emb_size: 100
-    learning_rate: 0.025118864315095822
+    learning_rate: 0.005754399373371567
     seed: 3
 data:
   ssl_task:
@@ -104,7 +103,7 @@ data:
   batch_size: 64
   num_workers: 30
   data_dir: /mnt/nemar/openneuro
-  cache_dir: data
+  cache_dir: data-no_cz-0.5_highpass-6_lowpass
   datasets:
   - ds005505
   - ds005506

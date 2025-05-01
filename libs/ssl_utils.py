@@ -12,36 +12,15 @@ class LitSSL(L.LightningModule):
     def __init__(self, 
         encoder_path: str,
         encoder_kwargs: Optional[Union[dict[str, Any], dict[str, dict[str, Any]]]] = None,
-        encoder_emb_size=1024,
         emb_size=100, 
-        dropout=0.5,
+        encoder_emb_size=100,
         learning_rate=0.005,
         seed=0
     ):
         super().__init__()
         self.encoder = instantiate_module(encoder_path, encoder_kwargs)
-        print(self.encoder)
-        if isinstance(self.encoder, braindecode.models.deep4.Deep4Net):
-            print('set bias')
-            with torch.no_grad():
-                self.encoder.final_layer.conv_classifier.bias.copy_(torch.tensor(0.04))
-
-        # self.emb_size = emb_size
-        # encoder_expected_emb_size = 1024
-        # if encoder_emb_size != encoder_expected_emb_size:
-        #     projection_layer = nn.Sequential(
-        #         nn.Dropout(dropout),
-        #         nn.Linear(encoder_emb_size, encoder_expected_emb_size),
-        #     )
-        # else:
-        #     projection_layer = nn.Identity()
-            
-        # self.embedder = nn.Sequential(
-        #     projection_layer,
-        #     nn.Dropout(dropout),
-        #     nn.Linear(encoder_expected_emb_size, emb_size),
-        #     nn.Dropout(dropout)
-        # )
+        self.emb_size = emb_size
+        self.encoder_emb_size = encoder_emb_size
         self.learning_rate = learning_rate
 
         evaluators = ['RankMe', 'Regressor']
@@ -59,8 +38,6 @@ class LitSSL(L.LightningModule):
         raise NotImplementedError()
     
     def on_validation_start(self):
-        # print(self.training)
-        # print(self.eval)
         self.eval()
 
     def validation_step(self, batch, batch_idx):
@@ -104,6 +81,9 @@ class LitSSL(L.LightningModule):
             else:
                 self.log(f'val_{type(evaluator).__name__}', val)
                 print(f'val_{type(evaluator).__name__}', val)
+
+    def on_keyboard_interrupt(self):
+        self.trainer.save_checkpoint("last_checkpoint.ckpt")
 
     def on_before_optimizer_step(self, optimizer):
         # Compute the 2-norm for each layer

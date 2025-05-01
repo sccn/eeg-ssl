@@ -19,24 +19,26 @@ class RankMe(Metric):
         self.add_state("embs", default=[], dist_reduce_fx='cat')
 
     def update(self, data: tuple) -> None:
-        embs = data[0]
+        embs = data
         self.embs.append(embs)
 
     def compute(self) -> torch.Tensor:
         # parse inputs
+        # print('RankMe self.embs', self.embs)
         embs = dim_zero_cat(self.embs).float()
         if len(embs.shape) > 2:
             raise ValueError('Expect 2D embeddings of shape (N, K)')
+        print('RankMe embs shape', embs.shape)
         if embs.shape[0] < embs.shape[1]:
             raise ValueError(f'Expect N >= K but received ({embs.shape})')
         # subselect 25600 embeddings randomly
-        embs = embs[torch.randperm(embs.shape[0])[:25600]]
+        # embs = embs[torch.randperm(embs.shape[0])[:25600]]
         _, S, _ = torch.linalg.svd(embs)
         eps = 1e-7
         p = S/torch.linalg.norm(S, ord=1) + eps
         rank_z = torch.exp(-torch.sum(p*torch.log(p)))
 
-        return rank_z.cpu()
+        return rank_z
 
 class Regressor(Metric):
     '''

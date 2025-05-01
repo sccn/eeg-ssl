@@ -7,11 +7,12 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from .ssl_utils import LitSSL
-from .evaluation import Regressor, get_subjects_labels, get_subject_predictions
+from .evaluation import RankMe, Regressor, get_subjects_labels, get_subject_predictions
 from torchmetrics.functional.classification import binary_accuracy
 from torchmetrics.functional import f1_score
 from lightning.pytorch.utilities import grad_norm
 from torchmetrics.functional.regression import concordance_corrcoef, r2_score, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error
+import braindecode
 
 class SSLTask():
     def __init__(self):
@@ -49,7 +50,8 @@ class RelativePositioning(SSLTask):
         if dist.is_initialized():
             sampler = DistributedRelativePositioningSampler(dataset.get_metadata(), tau_pos, tau_neg, self.n_samples_per_dataset, self.tau_max, self.same_rec_neg, random_state=self.random_state)
         else:
-            sampler = RelativePositioningSampler(dataset.get_metadata(), tau_pos, tau_neg, n_examples, self.tau_max, self.same_rec_neg, random_state=self.random_state)
+            print("Using non-distributed sampler")
+            sampler = RelativePositioningSampler(dataset.get_metadata(), tau_pos, tau_neg, n_examples, self.tau_max, self.same_rec_neg)
 
         return sampler
 
@@ -62,6 +64,7 @@ class RelativePositioning(SSLTask):
 
         def __getitem__(self, index):
             if self.return_pair:
+                # print('index', index)
                 ind1, ind2, y = index
                 return (super().__getitem__(ind1)[0],
                         super().__getitem__(ind2)[0]), y
@@ -80,20 +83,175 @@ class RelativePositioning(SSLTask):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.save_hyperparameters()
-            self.clf = nn.Linear(self.emb_size, 1)
+            self.projection_head = nn.Sequential(
+                nn.Linear(self.emb_size, 1),
+                nn.ReLU(),
+            )
+            self.evaluator = RankMe()
         
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
             # it is independent of forward
             X, y = batch[0], batch[1]
             x1, x2 = X[0], X[1]
-            z1, z2 = self.embed(x1), self.embed(x2)
+            z1, z2 = self.encoder(x1), self.encoder(x2)
             z = torch.abs(z1 - z2)
-            loss = nn.functional.binary_cross_entropy_with_logits(self.clf(z).flatten(), y)
+            # print('y', y)
+            loss = nn.functional.binary_cross_entropy_with_logits(torch.squeeze(self.projection_head(z)), y)
 
-            self.log("train_loss", loss)
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            return loss
+        
+        def validation_step(self, batch, batch_idx):
+            pass
+            # X, Y, subjects = batch[0], batch[1], batch[3]
+            # Z = torch.squeeze(self.encoder(X))
+            # self.evaluator.update(Z)
+        
+        def on_validation_epoch_end(self):
+            pass
+            # score = self.evaluator.compute()
+            # self.log(f'val_RankMe', score, prog_bar=True, logger=True, sync_dist=True)
+        
+    
+
+class SimCLR(SSLTask):
+    def __init__(self, tau_pos_s):
+        super().__init__()
+        # set all arguments except datasets as attributes
+        self.tau_pos_s = tau_pos_s
+        
+    class SimCLRSampler(RecordingSampler):
+        def __init__(
+            self,
+            metadata,
+            tau_pos,
+            random_state=None,
+        ):
+            super().__init__(metadata, random_state=random_state)
+            self.tau_pos = tau_pos
+
+        def _sample_pair(self):
+            """Sample a positive pair of two windows from same recording."""
+            # Sample first window
+            win_ind1, rec_ind1 = self.sample_window()
+            ts1 = self.metadata.iloc[win_ind1]["i_start_in_trial"]
+            ts = self.info.iloc[rec_ind1]["i_start_in_trial"]
+
+            # Decide whether the pair will be positive or negative
+            win_ind2 = None
+            mask = (ts >= ts1 - self.tau_pos) & (ts <= ts1 + self.tau_pos)
+
+            if win_ind2 is None:
+                mask[ts == ts1] = False  # same window cannot be sampled twice
+                if sum(mask) == 0:
+                    raise NotImplementedError
+                win_ind2 = self.rng.choice(self.info.iloc[rec_ind1]["index"][mask])
+
+            return win_ind1, win_ind2
+
+        def __iter__(self):
+            """
+            Iterate over pairs.
+
+            Yields
+            ------
+            int
+                Position of the first window in the dataset.
+            int
+                Position of the second window in the dataset.
+            """
+            for i in range(len(self.metadata)):
+                yield self._sample_pair()
+
+        def __len__(self):
+            return len(self.metadata)
+        
+        @property
+        def n_examples(self):
+            return len(self.metadata)
+
+    class SimCLRDataset(BaseConcatDataset):
+        """BaseConcatDataset with __getitem__ that expects 2 indices and a target.
+        """
+        def __init__(self, list_of_ds):
+            super().__init__(list_of_ds)
+
+        def __getitem__(self, index):
+            # print('index', index)
+            ind1, ind2 = index
+            return (super().__getitem__(ind1)[0],
+                    super().__getitem__(ind2)[0])
+
+    def dataset(self, datasets: List[BaseConcatDataset]):
+        return SimCLR.SimCLRDataset(datasets)
+    
+    def sampler(self, dataset: BaseConcatDataset):
+        sfreq = dataset.datasets[0].raw.info['sfreq']
+        tau_pos = int(sfreq * self.tau_pos_s)
+        sampler = SimCLR.SimCLRSampler(dataset.get_metadata(), tau_pos)
+
+        return sampler
+
+    class SimCLRLit(LitSSL):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.save_hyperparameters()
+            self.projection_head = nn.Sequential(
+                nn.Linear(self.encoder_emb_size, self.emb_size),
+                nn.ReLU(),
+            )
+            self.evaluator = RankMe()
+        
+        def contrastive_loss(self, hidden1, hidden2, temperature=0.1, LARGE_NUM=1e9):
+            hidden1, hidden2 = torch.nn.functional.normalize(hidden1, dim=1, p=2), torch.nn.functional.normalize(hidden2, dim=1, p=2)
+            batch_size = hidden1.shape[0]
+            labels = torch.nn.functional.one_hot(torch.arange(batch_size), batch_size * 2).to(hidden1.device)
+            labels[:,batch_size:] = labels[:,:batch_size]
+            labels = labels.float()  # Convert to float for loss calculation
+
+            assert torch.allclose(torch.sum(labels, dim=1), torch.ones_like(torch.sum(labels, dim=1))*2)
+            masks = torch.nn.functional.one_hot(torch.arange(batch_size), batch_size).bool().to(hidden1.device)
+            logits_aa = torch.matmul(hidden1, hidden1.T) / temperature
+            # logits_aa = logits_aa.masked_fill(masks == 1, float('-inf'))
+            logits_bb = torch.matmul(hidden2, hidden2.T) / temperature
+            # logits_bb = logits_bb.masked_fill(masks == 1, float('-inf'))
+            logits_ab = torch.matmul(hidden1, hidden2.T) / temperature
+            logits_ba = torch.matmul(hidden2, hidden1.T) / temperature
+            loss_a = torch.nn.functional.cross_entropy(torch.cat([logits_ab, logits_aa], dim=1), labels)
+            loss_b = torch.nn.functional.cross_entropy(torch.cat([logits_ba, logits_bb], dim=1), labels)
+            loss = (loss_a + loss_b) / 2
+
             return loss
 
+        def training_step(self, batch, batch_idx):
+            # training_step defines the train loop.
+            # it is independent of forward
+            temp = 0.1
+            x1, x2 = batch[0], batch[1]
+            h1, h2 = self.encoder(x1), self.encoder(x2)
+            z1, z2 = self.projection_head(h1), self.projection_head(h2)
+            assert z1.shape[0] == z2.shape[0] == x1.shape[0]
+            
+            loss = self.contrastive_loss(z1, z2, temperature=temp)
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            return loss
+        
+        def validation_step(self, batch, batch_idx):
+            temp = 0.1
+            x1, x2 = batch[0], batch[1]
+            h1, h2 = self.encoder(x1), self.encoder(x2)
+            z1, z2 = self.projection_head(h1), self.projection_head(h2)
+            assert z1.shape[0] == z2.shape[0] == x1.shape[0]
+            
+            loss = self.contrastive_loss(z1, z2, temperature=temp)
+            self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            return loss
+
+        def on_validation_epoch_end(self):
+            pass
+    
+         
 class VICReg(SSLTask):
     def __init__(self, 
                  tau_pos_s,  # window length from which to sample different views (segments) of the same recording
@@ -291,6 +449,10 @@ class Regression(SSLTask):
             #     nn.Dropout(dropout),
             #     nn.Linear(512, 1),
             # )
+            if isinstance(self.encoder, braindecode.models.deep4.Deep4Net):
+                print('set bias')
+                with torch.no_grad():
+                    self.encoder.final_layer.conv_classifier.bias.copy_(torch.tensor(0.04))
 
             self.evaluator = Regressor()
             

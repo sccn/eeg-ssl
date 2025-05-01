@@ -34,7 +34,8 @@ class SSLHBNDataModule(L.LightningDataModule):
         target_label='age',
         overwrite_preprocessed=False,
         mapping=None,
-        val_release='ds005516',
+        val_release='ds005505',
+        use_ssl_sampler_for_val=False,
     ):
         super().__init__()
         self.ssl_task = ssl_task
@@ -50,6 +51,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.target_label = target_label
         self.mapping = mapping
         self.val_release = val_release
+        self.use_ssl_sampler_for_val = use_ssl_sampler_for_val
         self.save_hyperparameters()
 
     def prepare_data(self):
@@ -158,6 +160,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         train_sampler = self.ssl_task.sampler(self.train_ds)
         shuffle = True if train_sampler is None else False
         if train_sampler:
+            print(f"Using {type(train_sampler).__name__} sampler with shuffle {shuffle}")
             dataloader = DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
         else:
             dataloader = DataLoader(self.train_ds, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
@@ -189,7 +192,11 @@ class SSLHBNDataModule(L.LightningDataModule):
         return default_collate(sequences), labels, default_collate(indices), subjects
 
     def val_dataloader(self):
-        return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
+        if self.use_ssl_sampler_for_val:
+            val_sampler = self.ssl_task.sampler(self.valid_ds)
+            return DataLoader(self.valid_ds, sampler=val_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
+        else:
+            return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
 
     def test_dataloader(self):
         return DataLoader(self.test_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
