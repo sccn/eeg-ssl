@@ -52,11 +52,13 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.mapping = mapping
         self.val_release = val_release
         self.use_ssl_sampler_for_val = use_ssl_sampler_for_val
+        print(self.use_ssl_sampler_for_val)
         self.save_hyperparameters()
 
     def prepare_data(self):
         # create preprocessed data if not exists
         print(f"Using datasets: {self.datasets}")
+        print(f"Validation release: {self.val_release}")
         selected_tasks = ['RestingState']
         for dsnumber in self.datasets:
             savedir = self.cache_dir / f'{dsnumber}_preprocessed'
@@ -160,7 +162,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         train_sampler = self.ssl_task.sampler(self.train_ds)
         shuffle = True if train_sampler is None else False
         if train_sampler:
-            print(f"Using {type(train_sampler).__name__} sampler with shuffle {shuffle}")
+            print(f"Using {type(train_sampler).__name__} sampler with shuffle {shuffle} for training")
             dataloader = DataLoader(self.train_ds, sampler=train_sampler, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
         else:
             dataloader = DataLoader(self.train_ds, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=shuffle)
@@ -193,7 +195,9 @@ class SSLHBNDataModule(L.LightningDataModule):
 
     def val_dataloader(self):
         if self.use_ssl_sampler_for_val:
+            self.valid_ds = self.ssl_task.dataset(datasets=self.valid_ds.datasets)
             val_sampler = self.ssl_task.sampler(self.valid_ds)
+            print(f"Using {type(val_sampler).__name__} sampler for validation")
             return DataLoader(self.valid_ds, sampler=val_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
         else:
             return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
