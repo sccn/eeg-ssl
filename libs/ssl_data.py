@@ -52,7 +52,6 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.mapping = mapping
         self.val_release = val_release
         self.use_ssl_sampler_for_val = use_ssl_sampler_for_val
-        print(self.use_ssl_sampler_for_val)
         self.save_hyperparameters()
 
     def prepare_data(self):
@@ -195,9 +194,9 @@ class SSLHBNDataModule(L.LightningDataModule):
         return default_collate(sequences), labels, default_collate(indices), subjects
 
     def val_dataloader(self):
-        if self.use_ssl_sampler_for_val:
+        val_sampler = self.ssl_task.sampler(self.valid_ds)
+        if self.use_ssl_sampler_for_val and val_sampler is not None:
             self.valid_ds = self.ssl_task.dataset(datasets=self.valid_ds.datasets)
-            val_sampler = self.ssl_task.sampler(self.valid_ds)
             print(f"Using {type(val_sampler).__name__} sampler for validation")
             return DataLoader(self.valid_ds, sampler=val_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
         else:
