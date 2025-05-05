@@ -93,7 +93,7 @@ class LitSSL(L.LightningModule):
         self.log_dict(norms)
         
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
+        optimizer = optim.Adamax(self.parameters(), lr=self.learning_rate)
         return optimizer
 
 ############### Helper functions ###############

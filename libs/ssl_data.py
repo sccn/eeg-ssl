@@ -142,6 +142,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             window_stride_samples=window_stride_samples, drop_last_window=True,
             preload=False, mapping=self.mapping)
         
+
         return windows_ds
 
     def setup(self, stage=None):
@@ -149,6 +150,24 @@ class SSLHBNDataModule(L.LightningDataModule):
             # use all datasets for training
             train_ds = self.get_and_filter_dataset('train')
             valid_ds = self.get_and_filter_dataset('valid')
+
+            if self.target_label == 'sex':
+                # Get balanced indices for male and female subjects and create a balanced dataset
+                male_subjects   = train_ds.description['subject'][train_ds.description['sex'] == 'M']
+                female_subjects = train_ds.description['subject'][train_ds.description['sex'] == 'F']
+                n_samples = min(len(male_subjects), len(female_subjects))
+                train_subj = np.concatenate([male_subjects[:n_samples], female_subjects[:n_samples]])
+                train_gender = ['M'] * n_samples + ['F'] * n_samples
+                # train_subj, val_subj, train_gender, val_gender = train_test_split(balanced_subjects, balanced_gender, train_size=1, stratify=balanced_gender)
+
+                # Create datasets
+                train_ds = BaseConcatDataset([ds for ds in train_ds.datasets if ds.description.subject in train_subj])
+
+                # Check the balance of the dataset
+                assert len(train_subj) == len(train_gender)
+                print(f"Number of subjects in balanced dataset: {len(train_subj)}")
+                print(f"Gender distribution in balanced dataset: {np.unique(train_gender, return_counts=True)}")
+
             assert set(train_ds.description['subject']).intersection(set(valid_ds.description['subject'])) == set(), "Train and valid datasets should not overlap"
 
             self.train_ds = train_ds

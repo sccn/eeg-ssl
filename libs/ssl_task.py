@@ -6,8 +6,9 @@ from typing import List
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+from torch import optim
 from .ssl_utils import LitSSL
-from .ssl_model import BENDRContextualizer, ConvEncoderBENDR
+from .ssl_model import BENDRContextualizer, ConvEncoderBENDR, BENDRLSTM
 from .evaluation import RankMe, Regressor, get_subjects_labels, get_subject_predictions
 from torchmetrics.functional.classification import binary_accuracy
 from torchmetrics.functional import f1_score
@@ -263,14 +264,18 @@ class CPC(SSLTask):
 
     class CPCLit(LitSSL):
         # Repurpose from https://github.com/SPOClab-ca/BENDR/blob/ac918abaec111d15fcaa2a8fcd2bd3d8b0d81a10/dn3_ext.py#L232
-        def __init__(self, downsampling_factor, mask_rate=0.1, mask_span=6, temp=0.1,
+        def __init__(self, downsampling_factor=96, mask_rate=0.1, mask_span=6, temp=0.1,
                  permuted_encodings=False, permuted_contexts=False, enc_feat_l2=0.001,
                  unmasked_negative_frac=0.25, num_negatives=20, **kwargs):
             super().__init__(**kwargs)
-            self.save_hyperparameters()
-            self.contextualizer = BENDRContextualizer(
+            # self.contextualizer = BENDRContextualizer(
+            #     in_features=self.encoder_emb_size,
+            #     start_token=start_token,
+            # )
+            self.contextualizer = BENDRLSTM(
                 in_features=self.encoder_emb_size,
             )
+            self.automatic_optimization=False
             self.predict_length = mask_span
             self._enc_downsample = downsampling_factor
             self.mask_rate = mask_rate
@@ -286,9 +291,8 @@ class CPC(SSLTask):
         def _generate_negatives(self, z):
             """Generate negative samples to compare each sequence location against"""
             batch_size, feat, full_len = z.shape
-            z_k = z.permute([0, 2, 1]).reshape(-1, feat)
             with torch.no_grad():
-                # candidates = torch.arange(full_len).unsqueeze(-1).expand(-1, self.num_negatives).flatten()
+                z_k = z.clone().permute([0, 2, 1]).reshape(-1, feat)
                 negative_inds = torch.randint(0, full_len-1, size=(batch_size, full_len * self.num_negatives))
                 # From wav2vec 2.0 implementation, I don't understand
                 # negative_inds[negative_inds >= candidates] += 1
@@ -296,35 +300,59 @@ class CPC(SSLTask):
                 for i in range(1, batch_size):
                     negative_inds[i] += i * full_len
 
-            z_k = z_k[negative_inds.view(-1)].view(batch_size, full_len, self.num_negatives, feat)
-            return z_k, negative_inds
+                z_k = z_k[negative_inds.view(-1)].view(batch_size, full_len, self.num_negatives, feat)
+                return z_k, negative_inds
 
-        def _calculate_similarity(self, z, c, negatives):
-            c = c[..., 1:].permute([0, 2, 1]).unsqueeze(-2)
-            # c - (B, seq_len, 1, F). First seq is added start token - YT
-            targets = torch.cat([c, negatives], dim=-2)
-            # negatives - (B, seq_len, num_negatives, F) - YT
-            # targets - (B, seq_len, 1+num_negatives, F) - YT
-
-            z = z.permute([0, 2, 1]).unsqueeze(-2)
+        def _calculate_similarity(self, true_z, c, negatives):
+            targets = true_z.permute([0, 2, 1]).unsqueeze(-2)
             # z - (B, seq_len, 1, F) - YT
 
-            logits = F.cosine_similarity(z, targets, dim=-1) / self.temp # z is being broadcasted in the 3rd dimension - YT
-            # logits - (B, seq_len, 1+num_negatives)
+            if self.start_token:
+                c = c[..., 1:].permute([0, 2, 1]).unsqueeze(-2)
+            else:
+                c = c.permute([0, 2, 1]).unsqueeze(-2)
+            # c - (B, seq_len, 1, F). First seq is added start token - YT
+            # negatives - (B, seq_len, num_negatives, F) - YT
+            predictions = torch.cat([c, negatives], dim=-2)
+            # predictions - (B, seq_len, 1+num_negatives, F) - YT
 
-            # In case the contextualizer matches exactly, need to avoid divide by zero errors
-            negative_in_target = (c == negatives).all(-1)
-            if negative_in_target.any():
-                logits[1:][negative_in_target] = float("-inf")
+            logits = F.cosine_similarity(targets, predictions, dim=-1) / self.temp # z is being broadcasted in the 3rd dimension - YT
+            # logits - (B, seq_len, 1+num_negatives)
 
             return logits.view(-1, logits.shape[-1]) # flatten B x seq_len. Last dim correspond to torch CrossEntropyLoss C 
                                                      # --> will have true class label 0
 
-        def calculate_loss(self, inputs, outputs):
-            logits = outputs[0]
-            labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
-            # Note the loss_fn here integrates the softmax as per the normal classification pipeline (leveraging logsumexp)
-            return torch.nn.functional.cross_entropy(logits, labels) + self.beta * outputs[1].pow(2).mean()
+        def _calculate_similarity_cross_batch(self, true_z, c):
+            B, feat, seq_len = true_z.shape
+            assert c.shape == true_z.shape, f"c {c.shape} and true_z {true_z.shape} should be the same shape"
+            true_z = true_z.permute([0, 2, 1]) # (B, seq_len, F)
+            c = c.permute([0, 2, 1]) # (B, seq_len, F)
+
+            positives = F.cosine_similarity(c, c, dim=-1) / self.temp # (B, seq_len)
+            # create negative batch by randomize batch elements
+            negatives_batch_ind = torch.randint(0, B, (B,), device=true_z.device)
+            negatives_batch = true_z[negatives_batch_ind] # (B, seq_len, F)
+            assert negatives_batch.shape == true_z.shape, f"negatives_batch {negatives_batch.shape} should be the same shape as true_z {true_z.shape}"
+            negatives = F.cosine_similarity(c, negatives_batch, dim=-1) / self.temp # (B, seq_len)
+
+            assert positives.shape == negatives.shape, f"positives {positives.shape} and negatives {negatives.shape} should be the same shape"
+            assert not torch.allclose(positives, negatives), f"positives {positives.shape} and negatives {negatives.shape} should not be the same"
+
+            negatives = negatives.unsqueeze(-1).expand(-1, -1, self.num_negatives)
+            assert negatives.shape == (B, seq_len, self.num_negatives), f"negatives {negatives.shape} should be (B, seq_len, num_negatives)"
+
+            positives = positives.unsqueeze(-1) # (B, seq_len, 1)
+            assert positives.shape == (B, seq_len, 1), f"positives {positives.shape} should be (B, seq_len, 1)"
+
+            logits = torch.cat([positives, negatives], dim=-1) # (B, seq_len, 1+num_negatives)
+
+            return logits.view(-1, logits.shape[-1]) # flatten B x seq_len. Last dim correspond to torch CrossEntropyLoss C 
+                                                     # --> will have true class label 0
+        # def calculate_loss(self, inputs, outputs):
+        #     logits = outputs[0]
+        #     labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
+        #     # Note the loss_fn here integrates the softmax as per the normal classification pipeline (leveraging logsumexp)
+        #     return torch.nn.functional.cross_entropy(logits, labels) + self.beta * outputs[1].pow(2).mean()
 
         def _make_span_from_seeds(self, seeds, span, total=None):
             inds = list()
@@ -347,39 +375,64 @@ class CPC(SSLTask):
                     mask_seeds = np.nonzero(np.random.rand(total) < p)[0]
 
                 mask[i, self._make_span_from_seeds(mask_seeds, span, total=total)] = True
-
+            # mask - (B, seq_len)
             return mask
+
+        def generate_negatives_from_batch(self, z):
+            """Generate negatives from other samples in the batch"""
+            batch_size, feat, full_len = z.shape
+            with torch.no_grad():
+                z_k = z.clone().permute([0, 2, 1]).reshape(-1, feat)
+                negative_inds = torch.randint(0, full_len-1, size=(batch_size, full_len * self.num_negatives))
+                # From wav2vec 2.0 implementation, I don't understand
+                # negative_inds[negative_inds >= candidates] += 1
+
+                for i in range(1, batch_size):
+                    negative_inds[i] += i * full_len
+
+                z_k = z_k[negative_inds.view(-1)].view(batch_size, full_len, self.num_negatives, feat)
+                return z_k, negative_inds
 
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
             # it is independent of forward
             z = self.encoder(batch[0])
             # z - (B, F, seq_len)
+            # print('z', z)
 
             unmasked_z = z.clone()
             
             batch_size, feat, samples = z.shape
 
-            mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
+            # mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
+            # make simple mask: only predict the last token
+            # mask = torch.zeros((batch_size, samples), dtype=torch.bool)
+            # mask[:, -1] = True
+            mask = None
 
             c = self.contextualizer(z, mask)
             # c - (B, F, seq_len+1) ?
-            print('c', c)
+            # print('c', c)
 
             # Select negative candidates and generate labels for which are correct labels
             negatives, negative_inds = self._generate_negatives(z)
             # negatives - (B, seq_len, num_negatives, F)
 
-            logits = self._calculate_similarity(unmasked_z, c, negatives)
+            # logits = self._calculate_similarity(unmasked_z, c, negatives)
             # logits - (B x seq_len, 1+num_negatives)
-            print('logits', logits)
+            # fake task
+            # populate values of each row of logits with the mean of the row keeping number of columns
+            # logits = logits.mean(dim=1, keepdim=True).repeat(logits.shape[0], self.num_negatives + 1)
+            
+            logits = self._calculate_similarity_cross_batch(unmasked_z, c)
+            print('logits[0]', logits[0])
 
             labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
             # labels - (B x seq_len) all 0s
-            print('labels', labels)
+            # print('labels', labels)
 
             loss = torch.nn.functional.cross_entropy(logits, labels)
-            print('loss', loss)
+            # print('loss', loss)
 
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
             return loss
@@ -401,8 +454,9 @@ class CPC(SSLTask):
             negatives, negative_inds = self._generate_negatives(z)
             # negatives - (B, seq_len, num_negatives, F)
 
-            logits = self._calculate_similarity(unmasked_z, c, negatives)
+            # logits = self._calculate_similarity(unmasked_z, c, negatives)
             # logits - (B x seq_len, 1+num_negatives)
+            logits = self._calculate_similarity_cross_batch(unmasked_z, c)
 
             labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
             # labels - (B x seq_len) all 0s
@@ -665,6 +719,11 @@ class Classification(SSLTask):
     def __init__(self):
         super().__init__()
             
+    def sampler(self, dataset: BaseConcatDataset):
+        return None
+    def dataset(self, datasets: List[BaseConcatDataset]):
+        return BaseConcatDataset(datasets)
+
     class ClassificationLit(LitSSL):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -675,14 +734,19 @@ class Classification(SSLTask):
             norms = grad_norm(self.encoder, norm_type=2)
             self.log_dict(norms) 
 
+        def normalize_data(self, x):
+            mean = x.mean(dim=-1, keepdim=True)
+            std = x.std(dim=-1, keepdim=True) + 1e-7  # add small epsilon for numerical stability
+            x = (x - mean) / std
+            return x
+
         def training_step(self, batch, batch_idx):
             # self.train()
             # training_step defines the train loop.
             # it is independent of forward
             X, Y = batch[0], batch[1]
-            Z = self.encoder(X)
-            predictions = torch.nn.functional.softmax(Z, dim=1) 
-            probs, predictions = torch.max(predictions, 1) # TODO assume that's the compatible way to cross entropy
+            Z = self.encoder(self.normalize_data(X))
+            predictions = torch.argmax(Z, dim=1) 
             loss = nn.functional.cross_entropy(Z, Y)
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
             self.log('train_accuracy', binary_accuracy(predictions, Y), on_step=True, on_epoch=True, prog_bar=True, logger=True)
@@ -691,9 +755,8 @@ class Classification(SSLTask):
         
         def validation_step(self, batch, batch_idx):
             X, Y, _, subjects = batch
-            Z = self.encoder(X)
-            predictions = torch.nn.functional.softmax(Z, dim=1) 
-            probs, predictions = torch.max(predictions, 1) # TODO assume that's the compatible way to cross entropy
+            Z = self.encoder(self.normalize_data(X))
+            predictions = torch.argmax(Z, 1) 
             loss = nn.functional.cross_entropy(Z, Y)
             self.log("val_Classifier/loss", loss, on_epoch=True, prog_bar=True, logger=True)
             self.log('val_Classifier/accuracy', binary_accuracy(predictions, Y), on_epoch=True, prog_bar=True, logger=True)
@@ -702,8 +765,8 @@ class Classification(SSLTask):
         def on_validation_epoch_end(self):
             pass
 
-    def dataset(self, datasets: List[BaseConcatDataset]):
-        return BaseConcatDataset(datasets)
-    
-    def sampler(self, dataset: BaseConcatDataset):
-        return None
+        def configure_optimizers(self):
+            print('parameters', self.parameters())
+            optimizer = optim.Adamax(self.parameters(), lr=self.learning_rate)
+            print('optimizer', optimizer)
+            return optimizer

@@ -676,3 +676,35 @@ class BENDRContextualizer(nn.Module):
 
     def save(self, filename):
         torch.save(self.state_dict(), filename)
+
+class BENDRLSTM(nn.Module):
+
+    def __init__(self, in_features,
+                 position_encoder=25,):
+        super().__init__()
+
+
+        self.contextualizer = torch.nn.LSTM(
+            input_size=in_features,
+            hidden_size=512,
+            num_layers=3,
+            batch_first=True,
+            bidirectional=False,
+        )
+
+        # Initialize replacement vector with 0's
+        self.mask_replacement = torch.nn.Parameter(torch.normal(0, in_features**(-0.5), size=(in_features,)),
+                                                   requires_grad=True)
+
+    def forward(self, x, mask_t=None):
+        x = x.permute(0, 2, 1)
+        bs, seq, feat = x.shape
+
+        if mask_t is not None:
+            x[mask_t] = self.mask_replacement
+
+        x, (h_n, c_n) = self.contextualizer(x)
+
+        return x.permute(0, 2, 1)
+        
+
