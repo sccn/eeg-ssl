@@ -67,10 +67,8 @@ class LitSSL(L.LightningModule):
             if type(val) == dict:
                 for k, v in val.items():
                     self.log(f'val_{type(evaluator).__name__}/{k}', v)
-                    print(f'val_{type(evaluator).__name__}/{k}', v)
             else:
                 self.log(f'val_{type(evaluator).__name__}', val)
-                print(f'val_{type(evaluator).__name__}', val)
     
     def on_test_epoch_end(self):
         for evaluator in self.evaluators:

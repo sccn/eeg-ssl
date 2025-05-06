@@ -19,7 +19,7 @@ class RankMe(Metric):
         self.add_state("embs", default=[], dist_reduce_fx='cat')
 
     def update(self, data: tuple) -> None:
-        embs = data
+        embs = data[0]
         self.embs.append(embs)
 
     def compute(self) -> torch.Tensor:
@@ -44,18 +44,18 @@ class Regressor(Metric):
     '''
     Validation using regression on target label
     '''
-    def __init__(self, **kwargs):
+    def __init__(self, projection_head=None, **kwargs):
         super().__init__(**kwargs)
-        self.add_state("predictions", default=[], dist_reduce_fx='cat')
+        self.add_state("x", default=[], dist_reduce_fx='cat')
         self.add_state("labels", default=[], dist_reduce_fx='cat')
         self.add_state("subjects", default=[], dist_reduce_fx="cat")
-        # self.subjects = []
+        self.projection_head = projection_head
 
     def update(self, data:tuple) -> None:
-        predictions = data[0]
+        x = data[0]
         labels = data[1]
         subjects = data[2]
-        self.predictions.append(predictions)
+        self.x.append(x)
         self.labels.append(labels)
         subjects_encoded = encode_subjects(subjects).to(device=self.device)
         # print('encoded subjects', subjects_encoded)
@@ -63,10 +63,19 @@ class Regressor(Metric):
         # self.subjects.extend(subjects)
 
     def compute(self) -> torch.Tensor:
-        preds = dim_zero_cat(self.predictions).float()
+        x = dim_zero_cat(self.x).float()
         labels = dim_zero_cat(self.labels).float()
         subjects_encoded = dim_zero_cat(self.subjects).float()
         
+        if self.projection_head is not None:
+            from sklearn.neural_network import MLPRegressor
+            regr = MLPRegressor(random_state=1, max_iter=2000, tol=0.1)
+            x_clone = x.clone().cpu()
+            regr.fit(x_clone, labels.cpu())
+            preds = regr.predict(x_clone)
+            preds = torch.from_numpy(preds).to(x.device)
+        else:
+            preds = x
         # compute sample-level metrics
         metrics = ['R2',    'concordance',      'NRMSE',                        'mse',                  'mae']
         fcns = [r2_score, concordance_corrcoef, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error]

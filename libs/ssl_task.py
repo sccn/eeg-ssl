@@ -278,7 +278,7 @@ class CPC(SSLTask):
             #     start_token=None,
             # )
             self.contextualizer = instantiate_module(contextualizer_path, contextualizer_kwargs)
-            # Initialize replacement vector with 0's
+            # Initialize replacement vector with standard normal
             self.mask_replacement = torch.nn.Parameter(torch.normal(0, self.encoder_emb_size**(-0.5), size=(self.encoder_emb_size,)),
                                                     requires_grad=True)
 
@@ -293,6 +293,8 @@ class CPC(SSLTask):
             self.start_token = getattr(self.contextualizer, 'start_token', None)
             self.unmasked_negative_frac = unmasked_negative_frac
             self.num_negatives = num_negatives
+
+            self.evaluators = [Regressor(projection_head=True)]
         
         def _generate_negatives(self, z):
             """Generate negative samples to compare each sequence location against"""
@@ -441,6 +443,7 @@ class CPC(SSLTask):
         def validation_step(self, batch, batch_idx):
             z = self.encoder(batch[0])
             batch_size, feat, samples = z.shape
+            Y, subjects = batch[1], batch[3]
             # z - (B, F, seq_len)
 
             unmasked_z = z.clone()
@@ -448,8 +451,8 @@ class CPC(SSLTask):
             mask = None
             # mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
             # make simple mask: only predict the last token
-            mask = torch.zeros((batch_size, samples), dtype=torch.bool)
-            mask[:, -1] = True
+            # mask = torch.zeros((batch_size, samples), dtype=torch.bool)
+            # mask[:, -1] = True
 
             if mask is not None:
                 z.transpose(2, 1)[mask] = self.mask_replacement
@@ -459,10 +462,11 @@ class CPC(SSLTask):
             loss = self.compute_cross_batch_loss(unmasked_z, c)
 
             self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-            return loss
 
-        def on_validation_epoch_end(self):
-            pass
+            for evaluator in self.evaluators:
+                c_last = c[:, :, -1]
+                evaluator.update((c_last, Y, subjects))
+
             
 class VICReg(SSLTask):
     def __init__(self, 

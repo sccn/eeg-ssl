@@ -99,6 +99,7 @@ model:
     encoder_emb_size: 512
     learning_rate: 0.005
     mask_span: 1
+    mask_rate: 0.1
     seed: 4
 data:
   ssl_task:
@@ -128,4 +129,4 @@ data:
   use_ssl_sampler_for_val: true
 optimizer: null
 lr_scheduler: null
-ckpt_path: null
+ckpt_path: checkpoints/model-3k5y24ev:v15/model.ckpt
