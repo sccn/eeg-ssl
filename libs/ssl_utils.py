@@ -89,7 +89,7 @@ class LitSSL(L.LightningModule):
     def on_before_optimizer_step(self, optimizer):
         # Compute the 2-norm for each layer
         # If using mixed precision, the gradients are already unscaled here
-        norms = grad_norm(self.encoder, norm_type=2)
+        norms = grad_norm(self, norm_type=2)
         self.log_dict(norms)
         
     def configure_optimizers(self):

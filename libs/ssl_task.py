@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from torch import optim
-from .ssl_utils import LitSSL
+from .ssl_utils import LitSSL, instantiate_module
 from .ssl_model import BENDRContextualizer, ConvEncoderBENDR, BENDRLSTM
 from .evaluation import RankMe, Regressor, get_subjects_labels, get_subject_predictions
 from torchmetrics.functional.classification import binary_accuracy
@@ -15,6 +15,7 @@ from torchmetrics.functional import f1_score
 from lightning.pytorch.utilities import grad_norm
 from torchmetrics.functional.regression import concordance_corrcoef, r2_score, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error
 import braindecode
+from typing import Any, Optional, Union
 
 class SSLTask():
     def __init__(self):
@@ -264,18 +265,23 @@ class CPC(SSLTask):
 
     class CPCLit(LitSSL):
         # Repurpose from https://github.com/SPOClab-ca/BENDR/blob/ac918abaec111d15fcaa2a8fcd2bd3d8b0d81a10/dn3_ext.py#L232
-        def __init__(self, downsampling_factor=96, mask_rate=0.1, mask_span=6, temp=0.1,
-                 permuted_encodings=False, permuted_contexts=False, enc_feat_l2=0.001,
-                 unmasked_negative_frac=0.25, num_negatives=20, **kwargs):
+        def __init__(self, 
+                    contextualizer_path: str,
+                    contextualizer_kwargs: Optional[Union[dict[str, Any], dict[str, dict[str, Any]]]] = None, 
+                    downsampling_factor=96, 
+                    mask_rate=0.1, mask_span=6, temp=0.1,
+                    permuted_encodings=False, permuted_contexts=False, enc_feat_l2=0.001,
+                    unmasked_negative_frac=0.25, num_negatives=20, **kwargs):
             super().__init__(**kwargs)
             # self.contextualizer = BENDRContextualizer(
             #     in_features=self.encoder_emb_size,
-            #     start_token=start_token,
+            #     start_token=None,
             # )
-            self.contextualizer = BENDRLSTM(
-                in_features=self.encoder_emb_size,
-            )
-            self.automatic_optimization=False
+            self.contextualizer = instantiate_module(contextualizer_path, contextualizer_kwargs)
+            # Initialize replacement vector with 0's
+            self.mask_replacement = torch.nn.Parameter(torch.normal(0, self.encoder_emb_size**(-0.5), size=(self.encoder_emb_size,)),
+                                                    requires_grad=True)
+
             self.predict_length = mask_span
             self._enc_downsample = downsampling_factor
             self.mask_rate = mask_rate
@@ -322,32 +328,46 @@ class CPC(SSLTask):
             return logits.view(-1, logits.shape[-1]) # flatten B x seq_len. Last dim correspond to torch CrossEntropyLoss C 
                                                      # --> will have true class label 0
 
-        def _calculate_similarity_cross_batch(self, true_z, c):
+        def compute_cross_batch_loss(self, true_z, c):
             B, feat, seq_len = true_z.shape
             assert c.shape == true_z.shape, f"c {c.shape} and true_z {true_z.shape} should be the same shape"
             true_z = true_z.permute([0, 2, 1]) # (B, seq_len, F)
             c = c.permute([0, 2, 1]) # (B, seq_len, F)
 
-            positives = F.cosine_similarity(c, c, dim=-1) / self.temp # (B, seq_len)
+            positives = F.cosine_similarity(c, true_z, dim=-1) / self.temp # (B, seq_len)
             # create negative batch by randomize batch elements
             negatives_batch_ind = torch.randint(0, B, (B,), device=true_z.device)
             negatives_batch = true_z[negatives_batch_ind] # (B, seq_len, F)
             assert negatives_batch.shape == true_z.shape, f"negatives_batch {negatives_batch.shape} should be the same shape as true_z {true_z.shape}"
-            negatives = F.cosine_similarity(c, negatives_batch, dim=-1) / self.temp # (B, seq_len)
+            negatives_seq_ind = torch.randint(0, seq_len, (B, seq_len, self.num_negatives), device=true_z.device)
+            negatives_batch = torch.gather(negatives_batch.unsqueeze(2).expand(-1, -1, self.num_negatives, -1),  # Expand to (B, seq_len, num_negative, F)
+                                    dim=1,  # Sample along the time dimension (originally dimension 1)
+                                    index=negatives_seq_ind.unsqueeze(-1).expand(-1, -1, -1, feat))
+            negatives = F.cosine_similarity(c.unsqueeze(-2), negatives_batch, dim=-1) / self.temp # (B, seq_len, num_negatives)
 
-            assert positives.shape == negatives.shape, f"positives {positives.shape} and negatives {negatives.shape} should be the same shape"
-            assert not torch.allclose(positives, negatives), f"positives {positives.shape} and negatives {negatives.shape} should not be the same"
+            # assert positives.shape == negatives.shape, f"positives {positives.shape} and negatives {negatives.shape} should be the same shape"
+            # assert not torch.allclose(positives, negatives), f"positives {positives.shape} and negatives {negatives.shape} should not be the same"
 
-            negatives = negatives.unsqueeze(-1).expand(-1, -1, self.num_negatives)
+            # negatives = negatives.unsqueeze(-1).expand(-1, -1, self.num_negatives)
             assert negatives.shape == (B, seq_len, self.num_negatives), f"negatives {negatives.shape} should be (B, seq_len, num_negatives)"
 
             positives = positives.unsqueeze(-1) # (B, seq_len, 1)
             assert positives.shape == (B, seq_len, 1), f"positives {positives.shape} should be (B, seq_len, 1)"
 
             logits = torch.cat([positives, negatives], dim=-1) # (B, seq_len, 1+num_negatives)
+            logits = logits * 10
 
-            return logits.view(-1, logits.shape[-1]) # flatten B x seq_len. Last dim correspond to torch CrossEntropyLoss C 
-                                                     # --> will have true class label 0
+            logits = logits.view(-1, logits.shape[-1]) # flatten B x seq_len. Last dim correspond to torch CrossEntropyLoss C 
+                                                        # --> will have true class label 0
+            
+            labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
+            # labels - (B x seq_len) all 0s
+            # print('labels', labels)
+
+            loss = torch.nn.functional.cross_entropy(logits, labels)
+
+            return loss
+
         # def calculate_loss(self, inputs, outputs):
         #     logits = outputs[0]
         #     labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
@@ -394,74 +414,49 @@ class CPC(SSLTask):
                 return z_k, negative_inds
 
         def training_step(self, batch, batch_idx):
-            # training_step defines the train loop.
-            # it is independent of forward
             z = self.encoder(batch[0])
+            batch_size, feat, samples = z.shape
             # z - (B, F, seq_len)
-            # print('z', z)
 
             unmasked_z = z.clone()
             
-            batch_size, feat, samples = z.shape
-
-            # mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
+            mask = None
+            mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
             # make simple mask: only predict the last token
             # mask = torch.zeros((batch_size, samples), dtype=torch.bool)
             # mask[:, -1] = True
-            mask = None
 
-            c = self.contextualizer(z, mask)
-            # c - (B, F, seq_len+1) ?
-            # print('c', c)
+            if mask is not None:
+                z.transpose(2, 1)[mask] = self.mask_replacement
 
-            # Select negative candidates and generate labels for which are correct labels
-            negatives, negative_inds = self._generate_negatives(z)
-            # negatives - (B, seq_len, num_negatives, F)
+            c = self.contextualizer(z)
+            # c - (B, F, seq_len) 
 
-            # logits = self._calculate_similarity(unmasked_z, c, negatives)
-            # logits - (B x seq_len, 1+num_negatives)
-            # fake task
-            # populate values of each row of logits with the mean of the row keeping number of columns
-            # logits = logits.mean(dim=1, keepdim=True).repeat(logits.shape[0], self.num_negatives + 1)
-            
-            logits = self._calculate_similarity_cross_batch(unmasked_z, c)
-            print('logits[0]', logits[0])
-
-            labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
-            # labels - (B x seq_len) all 0s
-            # print('labels', labels)
-
-            loss = torch.nn.functional.cross_entropy(logits, labels)
-            # print('loss', loss)
+            loss = self.compute_cross_batch_loss(unmasked_z, c)
 
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+
             return loss
         
         def validation_step(self, batch, batch_idx):
             z = self.encoder(batch[0])
+            batch_size, feat, samples = z.shape
             # z - (B, F, seq_len)
 
             unmasked_z = z.clone()
+            
+            mask = None
+            # mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
+            # make simple mask: only predict the last token
+            mask = torch.zeros((batch_size, samples), dtype=torch.bool)
+            mask[:, -1] = True
 
-            batch_size, feat, samples = z.shape
+            if mask is not None:
+                z.transpose(2, 1)[mask] = self.mask_replacement
 
-            mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
-
-            c = self.contextualizer(z, mask)
-            # c - (B, F, seq_len+1) ?
-
-            # Select negative candidates and generate labels for which are correct labels
-            negatives, negative_inds = self._generate_negatives(z)
-            # negatives - (B, seq_len, num_negatives, F)
-
-            # logits = self._calculate_similarity(unmasked_z, c, negatives)
-            # logits - (B x seq_len, 1+num_negatives)
-            logits = self._calculate_similarity_cross_batch(unmasked_z, c)
-
-            labels = torch.zeros(logits.shape[0], device=logits.device, dtype=torch.long)
-            # labels - (B x seq_len) all 0s
-
-            loss = torch.nn.functional.cross_entropy(logits, labels)
+            c = self.contextualizer(z)
+            
+            loss = self.compute_cross_batch_loss(unmasked_z, c)
 
             self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
             return loss
@@ -728,12 +723,6 @@ class Classification(SSLTask):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
 
-        def on_before_optimizer_step(self, optimizer):
-            # Compute the 2-norm for each layer
-            # If using mixed precision, the gradients are already unscaled here
-            norms = grad_norm(self.encoder, norm_type=2)
-            self.log_dict(norms) 
-
         def normalize_data(self, x):
             mean = x.mean(dim=-1, keepdim=True)
             std = x.std(dim=-1, keepdim=True) + 1e-7  # add small epsilon for numerical stability
@@ -764,9 +753,3 @@ class Classification(SSLTask):
 
         def on_validation_epoch_end(self):
             pass
-
-        def configure_optimizers(self):
-            print('parameters', self.parameters())
-            optimizer = optim.Adamax(self.parameters(), lr=self.learning_rate)
-            print('optimizer', optimizer)
-            return optimizer

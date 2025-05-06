@@ -692,17 +692,8 @@ class BENDRLSTM(nn.Module):
             bidirectional=False,
         )
 
-        # Initialize replacement vector with 0's
-        self.mask_replacement = torch.nn.Parameter(torch.normal(0, in_features**(-0.5), size=(in_features,)),
-                                                   requires_grad=True)
-
-    def forward(self, x, mask_t=None):
+    def forward(self, x):
         x = x.permute(0, 2, 1)
-        bs, seq, feat = x.shape
-
-        if mask_t is not None:
-            x[mask_t] = self.mask_replacement
-
         x, (h_n, c_n) = self.contextualizer(x)
 
         return x.permute(0, 2, 1)

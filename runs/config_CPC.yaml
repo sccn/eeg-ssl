@@ -90,22 +90,26 @@ model:
   init_args:
     encoder_path: libs.ssl_model.ConvEncoderBENDR
     encoder_kwargs:
-      in_features: 129
+      in_features: 128
       encoder_h: 512
       dropout: 0.1
+    contextualizer_path: libs.ssl_model.BENDRLSTM
+    contextualizer_kwargs:
+      in_features: 512
     encoder_emb_size: 512
-    learning_rate: 0.006
+    learning_rate: 0.005
+    mask_span: 1
     seed: 4
 data:
   ssl_task:
       class_path: libs.ssl_task.CPC
       # init_args:
       #   tau_pos_s: 10
-  window_len_s: 2
-  batch_size: 256
+  window_len_s: 20
+  batch_size: 128
   num_workers: 30
   data_dir: /mnt/nemar/openneuro
-  cache_dir: data
+  cache_dir: data-no_cz-robust_scaled
   datasets:
   - ds005505
   - ds005506
