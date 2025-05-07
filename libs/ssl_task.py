@@ -661,7 +661,7 @@ class Regression(SSLTask):
                 with torch.no_grad():
                     self.encoder.final_layer.conv_classifier.bias.copy_(torch.tensor(0.04))
 
-            self.evaluator = Regressor()
+            self.evaluators = [Regressor()]
             
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
@@ -685,13 +685,9 @@ class Regression(SSLTask):
             X, Y, subjects = batch[0], batch[1], batch[3]
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X))
-            self.evaluator.update((Z, Y, subjects))
+            for evaluator in self.evaluators:
+                evaluator.update((Z, Y, subjects))
         
-        # def on_validation_epoch_end(self):
-        #     scores = self.evaluator.compute()
-        #     for k, v in scores.items():
-        #         self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True, sync_dist=True)
-
         def validation_step_not_metrics(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
             Y = Y.to(torch.float32)
