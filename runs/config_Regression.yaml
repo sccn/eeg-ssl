@@ -87,13 +87,15 @@ trainer:
 model:
   class_path: libs.ssl_task.Regression.RegressionLit
   init_args:
-    encoder_path: braindecode.models.Deep4Net
+    # encoder_path: braindecode.models.Deep4Net
+    encoder_path: libs.bendr.BENDR
     encoder_kwargs:
       n_outputs: 1
       n_chans: 128
       n_times: 500
-      activation_first_conv_nonlin: torch.nn.ELU
-      activation_later_conv_nonlin: torch.nn.ELU
+      activation: torch.nn.GELU
+      # activation_first_conv_nonlin: torch.nn.ELU
+      # activation_later_conv_nonlin: torch.nn.ELU
     learning_rate: 0.005754399373371567
     seed: 3
 data:
@@ -101,16 +103,16 @@ data:
       class_path: libs.ssl_task.Regression
   window_len_s: 2
   batch_size: 64
-  num_workers: 30
+  num_workers: 10
   data_dir: /mnt/nemar/openneuro
-  cache_dir: data-no_cz-0.5_highpass-6_lowpass
+  cache_dir: data-no_cz-robust_scaled
   datasets:
   - ds005505
   - ds005506
   - ds005507
   - ds005508
   - ds005509
-  - ds005510
+  # - ds005510
   - ds005511
   - ds005512
   - ds005514

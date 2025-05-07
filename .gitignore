@@ -1,4 +1,4 @@
-data
+data*
 libs/__pycache__/
 libs/data/
 wandb/
@@ -7,7 +7,8 @@ __pycache__/
 signalstore/
 aws/
 notebooks/test/
-notebooks/data/
+notebooks/data*
+notebooks/artifacts
 notebooks/eeg-ssl-voyager/
 **/lightning_logs/
 **/data/

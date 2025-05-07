@@ -105,7 +105,7 @@ data:
       init_args:
         tau_pos_s: 10
   window_len_s: 2
-  batch_size: 128
+  batch_size: 256
   num_workers: 30
   data_dir: /mnt/nemar/openneuro
   cache_dir: data

@@ -93,11 +93,12 @@ model:
       in_features: 128
       encoder_h: 512
       dropout: 0.1
-    contextualizer_path: libs.ssl_model.BENDRLSTM
+    contextualizer_path: libs.ssl_model.BENDRContextualizer
     contextualizer_kwargs:
       in_features: 512
+      start_token: null
     encoder_emb_size: 512
-    learning_rate: 0.005
+    learning_rate: 0.00005 #0.005
     mask_span: 1
     mask_rate: 0.1
     seed: 4
@@ -117,7 +118,7 @@ data:
   - ds005507
   - ds005508
   - ds005509
-  - ds005510
+  # - ds005510
   - ds005511
   - ds005512
   - ds005514
@@ -129,4 +130,4 @@ data:
   use_ssl_sampler_for_val: true
 optimizer: null
 lr_scheduler: null
-ckpt_path: checkpoints/model-3k5y24ev:v15/model.ckpt
+ckpt_path: null # checkpoints/model-3k5y24ev:v15/model.ckpt
