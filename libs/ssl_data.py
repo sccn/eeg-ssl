@@ -180,6 +180,8 @@ class SSLHBNDataModule(L.LightningDataModule):
 
             self.train_ds = train_ds
             self.valid_ds = valid_ds
+        elif stage == 'validate':
+            self.valid_ds = self.get_and_filter_dataset('valid')
         elif stage == 'test':
             self.test_ds = self.get_and_filter_dataset('test')
 
@@ -230,7 +232,6 @@ class SSLHBNDataModule(L.LightningDataModule):
 
     def test_dataloader(self):
         test_sampler = self.ssl_task.sampler(self.test_ds)
-        print('test sampler', test_sampler)
         if self.use_ssl_sampler_for_val and test_sampler is not None:
             self.valid_ds = self.ssl_task.dataset(datasets=self.test_ds.datasets)
             print(f"Using {type(test_sampler).__name__} sampler for validation")

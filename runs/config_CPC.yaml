@@ -127,6 +127,7 @@ data:
   target_label: p_factor
   overwrite_preprocessed: false
   val_release: ds005505
+  test_release: ds005510
   use_ssl_sampler_for_val: true
 optimizer: null
 lr_scheduler: null
