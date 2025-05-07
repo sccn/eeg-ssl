@@ -35,6 +35,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         overwrite_preprocessed=False,
         mapping=None,
         val_release='ds005505',
+        test_release='ds005510',
         use_ssl_sampler_for_val=False,
     ):
         super().__init__()
@@ -51,6 +52,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.target_label = target_label
         self.mapping = mapping
         self.val_release = val_release
+        self.test_release = test_release
         self.use_ssl_sampler_for_val = use_ssl_sampler_for_val
         self.save_hyperparameters()
 
@@ -58,6 +60,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         # create preprocessed data if not exists
         print(f"Using datasets: {self.datasets}")
         print(f"Validation release: {self.val_release}")
+        print(f"Test release: {self.test_release}")
         selected_tasks = ['RestingState']
         for dsnumber in self.datasets:
             savedir = self.cache_dir / f'{dsnumber}_preprocessed'
@@ -110,9 +113,11 @@ class SSLHBNDataModule(L.LightningDataModule):
 
     def get_and_filter_dataset(self, dataset_type='train'):
         if dataset_type == 'train':
-            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets if dsnumber != self.val_release])
+            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets if dsnumber != self.val_release and dsnumber != self.test_release])
         elif dataset_type == 'valid':
             all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{self.val_release}_preprocessed', preload=False)])
+        elif dataset_type == 'test':
+            all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{self.test_release}_preprocessed', preload=False)])
 
         filtered_ds = []
 
@@ -124,8 +129,11 @@ class SSLHBNDataModule(L.LightningDataModule):
             if not (pd.isna(ds.description[self.target_label]) or ds.description['subject'] in self.bad_subjects):
                 if len(ds.raw.ch_names) < 128:
                     raise ValueError(f"Dataset {ds.description['subject']} has less than 128 channels")
-                # add subject info for validation
-                target_labels = [self.target_label, 'subject'] if dataset_type == 'valid' else self.target_label
+                # add subject info for validation and test
+                if dataset_type == 'valid' or dataset_type == 'test':
+                    target_labels = [self.target_label, 'subject']
+                else: 
+                    target_labels = self.target_label
                 # set desired label target
                 ds.target_name = target_labels
                 filtered_ds.append(ds)
@@ -173,8 +181,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             self.train_ds = train_ds
             self.valid_ds = valid_ds
         elif stage == 'test':
-            valid_ds = self.get_and_filter_dataset('valid')
-            self.test_ds = valid_ds
+            self.test_ds = self.get_and_filter_dataset('test')
 
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)
@@ -222,7 +229,14 @@ class SSLHBNDataModule(L.LightningDataModule):
             return DataLoader(self.valid_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
 
     def test_dataloader(self):
-        return DataLoader(self.test_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
+        test_sampler = self.ssl_task.sampler(self.test_ds)
+        print('test sampler', test_sampler)
+        if self.use_ssl_sampler_for_val and test_sampler is not None:
+            self.valid_ds = self.ssl_task.dataset(datasets=self.test_ds.datasets)
+            print(f"Using {type(test_sampler).__name__} sampler for validation")
+            return DataLoader(self.test_ds, sampler=test_sampler, batch_size=self.batch_size, num_workers=self.num_workers)
+        else:
+            return DataLoader(self.test_ds, batch_size=self.batch_size, collate_fn=self.custom_collate_fn, num_workers=self.num_workers)
 
     def predict_dataloader(self):
         pass

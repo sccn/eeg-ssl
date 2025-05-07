@@ -466,6 +466,33 @@ class CPC(SSLTask):
             for evaluator in self.evaluators:
                 c_last = c[:, :, -1]
                 evaluator((c_last, Y, subjects))
+        
+        def test_step(self, batch, batch_idx):
+            z = self.encoder(batch[0])
+            batch_size, feat, samples = z.shape
+            Y, subjects = batch[1], batch[3]
+            # z - (B, F, seq_len)
+
+            unmasked_z = z.clone()
+            
+            mask = None
+            # mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
+            # make simple mask: only predict the last token
+            # mask = torch.zeros((batch_size, samples), dtype=torch.bool)
+            # mask[:, -1] = True
+
+            if mask is not None:
+                z.transpose(2, 1)[mask] = self.mask_replacement
+
+            c = self.contextualizer(z)
+            
+            loss = self.compute_cross_batch_loss(unmasked_z, c)
+
+            self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+
+            for evaluator in self.evaluators:
+                c_last = c[:, :, -1]
+                evaluator((c_last, Y, subjects))
 
             
 class VICReg(SSLTask):

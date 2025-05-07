@@ -46,6 +46,10 @@ class LitSSL(L.LightningModule):
         for evaluator in self.evaluators:
             evaluator.update((z, Y, subjects))
         
+    def on_test_start(self):
+        for evaluator in self.evaluators:
+            assert len(evaluator.labels) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
+
     def test_step(self, batch, batch_idx):
         X, Y, _, subjects = batch
         z = self.embed(X)
@@ -73,11 +77,9 @@ class LitSSL(L.LightningModule):
             val =  evaluator.compute()
             if type(val) == dict:
                 for k, v in val.items():
-                    self.log(f'val_{type(evaluator).__name__}/{k}', v)
-                    print(f'val_{type(evaluator).__name__}/{k}', v)
+                    self.log(f'test_{type(evaluator).__name__}/{k}', v)
             else:
-                self.log(f'val_{type(evaluator).__name__}', val)
-                print(f'val_{type(evaluator).__name__}', val)
+                self.log(f'test_{type(evaluator).__name__}', val)
 
     def on_keyboard_interrupt(self):
         self.trainer.save_checkpoint("last_checkpoint.ckpt")
