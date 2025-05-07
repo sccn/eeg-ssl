@@ -111,8 +111,8 @@ class RelativePositioning(SSLTask):
             # Z = torch.squeeze(self.encoder(X))
             # self.evaluator.update(Z)
         
-        def on_validation_epoch_end(self):
-            pass
+        # def on_validation_epoch_end(self):
+        #     pass
             # score = self.evaluator.compute()
             # self.log(f'val_RankMe', score, prog_bar=True, logger=True, sync_dist=True)
         
@@ -249,8 +249,8 @@ class SimCLR(SSLTask):
             self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
             return loss
 
-        def on_validation_epoch_end(self):
-            pass
+        # def on_validation_epoch_end(self):
+        #     pass
     
 class CPC(SSLTask):
     def __init__(self):
@@ -465,7 +465,7 @@ class CPC(SSLTask):
 
             for evaluator in self.evaluators:
                 c_last = c[:, :, -1]
-                evaluator.update((c_last, Y, subjects))
+                evaluator((c_last, Y, subjects))
 
             
 class VICReg(SSLTask):
@@ -687,10 +687,10 @@ class Regression(SSLTask):
             Z = torch.squeeze(self.encoder(X))
             self.evaluator.update((Z, Y, subjects))
         
-        def on_validation_epoch_end(self):
-            scores = self.evaluator.compute()
-            for k, v in scores.items():
-                self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True, sync_dist=True)
+        # def on_validation_epoch_end(self):
+        #     scores = self.evaluator.compute()
+        #     for k, v in scores.items():
+        #         self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True, sync_dist=True)
 
         def validation_step_not_metrics(self, batch, batch_idx):
             X, Y = batch[0], batch[1]

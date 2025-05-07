@@ -32,15 +32,13 @@ class LitSSL(L.LightningModule):
     def embed(self, x):
         return self.embedder(self.encoder(x))
 
-    # def on_train_start(self):
-    #     self.train()
-
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
     
-    # def on_validation_start(self):
-    #     self.eval()
-
+    def on_validation_start(self):
+        for evaluator in self.evaluators:
+            assert len(evaluator.labels) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
+    
     def validation_step(self, batch, batch_idx):
         X, Y, _, subjects = batch
         z = self.embed(X)
@@ -69,7 +67,7 @@ class LitSSL(L.LightningModule):
                     self.log(f'val_{type(evaluator).__name__}/{k}', v)
             else:
                 self.log(f'val_{type(evaluator).__name__}', val)
-    
+            
     def on_test_epoch_end(self):
         for evaluator in self.evaluators:
             val =  evaluator.compute()

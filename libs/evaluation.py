@@ -110,6 +110,8 @@ class Regressor(Metric):
             scores['subject_std_std'] = np.std(subject_predictions_std)
             scores['subject_std_iqr'] = np.quantile(subject_predictions_std, 0.75) - np.quantile(subject_predictions_std, 0.25)
         
+        self.reset()
+
         return scores
 
 def encode_subjects(subjects):
@@ -127,6 +129,8 @@ def get_subjects_labels(subjects, labels):
     # check that all labels are the same for each subject
     for subject, labels in subject_labels.items():
         if len(np.unique(labels)) > 1:
+            print(subject)
+            print(np.unique(labels))
             raise ValueError(f"Subject {subject} has different labels: {set(labels)}")
         subject_labels[subject] = labels[0]
     return subject_labels
