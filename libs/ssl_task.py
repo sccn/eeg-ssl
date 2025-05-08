@@ -1,5 +1,7 @@
+import warnings
 from braindecode.datasets import BaseDataset, BaseConcatDataset
-from braindecode.samplers import RecordingSampler, RelativePositioningSampler, DistributedRecordingSampler, DistributedRelativePositioningSampler
+from braindecode.samplers import RecordingSampler, RelativePositioningSampler #, DistributedRecordingSampler, DistributedRelativePositioningSampler
+from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 import numpy as np
 from typing import List
@@ -16,7 +18,235 @@ from lightning.pytorch.utilities import grad_norm
 from torchmetrics.functional.regression import concordance_corrcoef, r2_score, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error
 import braindecode
 from typing import Any, Optional, Union
+class DistributedRecordingSampler(DistributedSampler):
+    """Base sampler simplifying sampling from recordings in distributed setting.
 
+    Parameters
+    ----------
+    metadata : pd.DataFrame
+        DataFrame with at least one of {subject, session, run} columns for each
+        window in the BaseConcatDataset to sample examples from. Normally
+        obtained with `BaseConcatDataset.get_metadata()`. For instance,
+        `metadata.head()` might look like this:
+
+           i_window_in_trial  i_start_in_trial  i_stop_in_trial  target  subject    session    run
+        0                  0                 0              500      -1        4  session_T  run_0
+        1                  1               500             1000      -1        4  session_T  run_0
+        2                  2              1000             1500      -1        4  session_T  run_0
+        3                  3              1500             2000      -1        4  session_T  run_0
+        4                  4              2000             2500      -1        4  session_T  run_0
+
+    random_state : np.RandomState | int | None
+        Random state.
+
+    Attributes
+    ----------
+    info : pd.DataFrame
+        Series with MultiIndex index which contains the subject, session, run
+        and window indices information in an easily accessible structure for
+        quick sampling of windows.
+    n_recordings : int
+        Number of recordings available.
+    kwargs : dict
+        Additional keyword arguments to pass to torch DistributedSampler.
+        See https://pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler
+    """
+
+    def __init__(
+        self,
+        metadata,
+        random_state=None,
+        **kwargs,
+    ):
+        self.metadata = metadata
+        self.info = self._init_info(metadata)
+        self.rng = check_random_state(random_state)
+        # send information to DistributedSampler parent to handle data splitting among workers
+        super().__init__(self.info, seed=random_state, **kwargs)
+
+    def _init_info(self, metadata, required_keys=None):
+        """Initialize ``info`` DataFrame.
+
+        Parameters
+        ----------
+        required_keys : list(str) | None
+            List of additional columns of the metadata DataFrame that we should
+            groupby when creating ``info``.
+
+        Returns
+        -------
+            See class attributes.
+        """
+        keys = [k for k in ["subject", "session", "run"] if k in self.metadata.columns]
+        if not keys:
+            raise ValueError(
+                "metadata must contain at least one of the following columns: "
+                "subject, session or run."
+            )
+
+        if required_keys is not None:
+            missing_keys = [k for k in required_keys if k not in self.metadata.columns]
+            if len(missing_keys) > 0:
+                raise ValueError(f"Columns {missing_keys} were not found in metadata.")
+            keys += required_keys
+
+        metadata = metadata.reset_index().rename(columns={"index": "window_index"})
+        info = (
+            metadata.reset_index()
+            .groupby(keys)[["index", "i_start_in_trial"]]
+            .agg(["unique"])
+        )
+        info.columns = info.columns.get_level_values(0)
+
+        return info
+
+    def sample_recording(self):
+        """Return a random recording index.
+        super().__iter__() contains indices of datasets specific to the current process
+        determined by the DistributedSampler
+        """
+        # XXX docstring missing
+        return self.rng.choice(list(super().__iter__()))
+
+    def sample_window(self, rec_ind=None):
+        """Return a specific window."""
+        # XXX docstring missing
+        if rec_ind is None:
+            rec_ind = self.sample_recording()
+        win_ind = self.rng.choice(self.info.iloc[rec_ind]["index"])
+        return win_ind, rec_ind
+
+    @property
+    def n_recordings(self):
+        return super().__len__()
+    
+class DistributedRelativePositioningSampler(DistributedRecordingSampler):
+    """Sample examples for the relative positioning task from [Banville2020]_ in distributed mode.
+
+    Sample examples as tuples of two window indices, with a label indicating
+    whether the windows are close or far, as defined by tau_pos and tau_neg.
+
+    Parameters
+    ----------
+    metadata : pd.DataFrame
+        See RecordingSampler.
+    tau_pos : int
+        Size of the positive context, in samples. A positive pair contains two
+        windows x1 and x2 which are separated by at most `tau_pos` samples.
+    tau_neg : int
+        Size of the negative context, in samples. A negative pair contains two
+        windows x1 and x2 which are separated by at least `tau_neg` samples and
+        at most `tau_max` samples. Ignored if `same_rec_neg` is False.
+    n_examples : int
+        Number of pairs to extract.
+    tau_max : int | None
+        See `tau_neg`.
+    same_rec_neg : bool
+        If True, sample negative pairs from within the same recording. If
+        False, sample negative pairs from two different recordings.
+    random_state : None | np.RandomState | int
+        Random state.
+    kwargs: dict
+        Additional keyword arguments to pass to torch DistributedSampler.
+        See https://pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler
+
+    References
+    ----------
+    .. [Banville2020] Banville, H., Chehab, O., Hyvärinen, A., Engemann, D. A.,
+        & Gramfort, A. (2020). Uncovering the structure of clinical EEG
+        signals with self-supervised learning.
+        arXiv preprint arXiv:2007.16104.
+    """
+
+    def __init__(
+        self,
+        metadata,
+        tau_pos,
+        tau_neg,
+        n_examples,
+        tau_max=None,
+        same_rec_neg=True,
+        random_state=None,
+        **kwargs,
+    ):
+        super().__init__(metadata, random_state=random_state, **kwargs)
+        self.tau_pos = tau_pos
+        self.tau_neg = tau_neg
+        self.tau_max = np.inf if tau_max is None else tau_max
+        self.same_rec_neg = same_rec_neg
+
+        self.n_examples = n_examples // self.info.shape[0] * self.n_recordings
+        warnings.warn(
+            f"Rank {dist.get_rank()} - Number of datasets: {self.n_recordings}"
+        )
+        warnings.warn(f"Rank {dist.get_rank()} - Number of samples: {self.n_examples}")
+
+        if not same_rec_neg and self.n_recordings < 2:
+            raise ValueError(
+                "More than one recording must be available when "
+                "using across-recording negative sampling."
+            )
+
+    def _sample_pair(self):
+        """Sample a pair of two windows."""
+        # Sample first window
+        win_ind1, rec_ind1 = self.sample_window()
+        ts1 = self.metadata.iloc[win_ind1]["i_start_in_trial"]
+        ts = self.info.iloc[rec_ind1]["i_start_in_trial"]
+
+        # Decide whether the pair will be positive or negative
+        pair_type = self.rng.binomial(1, 0.5)
+        win_ind2 = None
+        if pair_type == 0:  # Negative example
+            if self.same_rec_neg:
+                mask = ((ts <= ts1 - self.tau_neg) & (ts >= ts1 - self.tau_max)) | (
+                    (ts >= ts1 + self.tau_neg) & (ts <= ts1 + self.tau_max)
+                )
+            else:
+                rec_ind2 = rec_ind1
+                while rec_ind2 == rec_ind1:
+                    win_ind2, rec_ind2 = self.sample_window()
+        elif pair_type == 1:  # Positive example
+            mask = (ts >= ts1 - self.tau_pos) & (ts <= ts1 + self.tau_pos)
+
+        if win_ind2 is None:
+            mask[ts == ts1] = False  # same window cannot be sampled twice
+            if sum(mask) == 0:
+                raise NotImplementedError
+            win_ind2 = self.rng.choice(self.info.iloc[rec_ind1]["index"][mask])
+
+        return win_ind1, win_ind2, float(pair_type)
+
+    def presample(self):
+        """Presample examples.
+
+        Once presampled, the examples are the same from one epoch to another.
+        """
+        self.examples = [self._sample_pair() for _ in range(self.n_examples)]
+        return self
+
+    def __iter__(self):
+        """
+        Iterate over pairs.
+
+        Yields
+        ------
+        int
+            Position of the first window in the dataset.
+        int
+            Position of the second window in the dataset.
+        float
+            0 for a negative pair, 1 for a positive pair.
+        """
+        for i in range(self.n_examples):
+            if hasattr(self, "examples"):
+                yield self.examples[i]
+            else:
+                yield self._sample_pair()
+
+    def __len__(self):
+        return self.n_examples
+    
 class SSLTask():
     def __init__(self):
         pass
@@ -271,7 +501,7 @@ class CPC(SSLTask):
                     downsampling_factor=96, 
                     mask_rate=0.1, mask_span=6, temp=0.1,
                     permuted_encodings=False, permuted_contexts=False, enc_feat_l2=0.001,
-                    unmasked_negative_frac=0.25, num_negatives=20, **kwargs):
+                    unmasked_negative_frac=0.25, num_negatives=20, negative_same_recording=False, **kwargs):
             super().__init__(**kwargs)
             # self.contextualizer = BENDRContextualizer(
             #     in_features=self.encoder_emb_size,
@@ -293,6 +523,7 @@ class CPC(SSLTask):
             self.start_token = getattr(self.contextualizer, 'start_token', None)
             self.unmasked_negative_frac = unmasked_negative_frac
             self.num_negatives = num_negatives
+            self.negative_same_recording = negative_same_recording
 
             self.evaluators = [Regressor(projection_head=True)]
         
@@ -311,40 +542,40 @@ class CPC(SSLTask):
                 z_k = z_k[negative_inds.view(-1)].view(batch_size, full_len, self.num_negatives, feat)
                 return z_k, negative_inds
 
-        def _calculate_similarity(self, true_z, c, negatives):
-            targets = true_z.permute([0, 2, 1]).unsqueeze(-2)
-            # z - (B, seq_len, 1, F) - YT
-
-            if self.start_token:
-                c = c[..., 1:].permute([0, 2, 1]).unsqueeze(-2)
-            else:
-                c = c.permute([0, 2, 1]).unsqueeze(-2)
-            # c - (B, seq_len, 1, F). First seq is added start token - YT
-            # negatives - (B, seq_len, num_negatives, F) - YT
-            predictions = torch.cat([c, negatives], dim=-2)
-            # predictions - (B, seq_len, 1+num_negatives, F) - YT
-
-            logits = F.cosine_similarity(targets, predictions, dim=-1) / self.temp # z is being broadcasted in the 3rd dimension - YT
-            # logits - (B, seq_len, 1+num_negatives)
-
-            return logits.view(-1, logits.shape[-1]) # flatten B x seq_len. Last dim correspond to torch CrossEntropyLoss C 
-                                                     # --> will have true class label 0
-
-        def compute_cross_batch_loss(self, true_z, c):
+        def compute_contrastive_loss(self, true_z, c, mask_t=None):
             B, feat, seq_len = true_z.shape
             assert c.shape == true_z.shape, f"c {c.shape} and true_z {true_z.shape} should be the same shape"
             true_z = true_z.permute([0, 2, 1]) # (B, seq_len, F)
             c = c.permute([0, 2, 1]) # (B, seq_len, F)
 
             positives = F.cosine_similarity(c, true_z, dim=-1) / self.temp # (B, seq_len)
-            # create negative batch by randomize batch elements
-            negatives_batch_ind = torch.randint(0, B, (B,), device=true_z.device)
-            negatives_batch = true_z[negatives_batch_ind] # (B, seq_len, F)
-            assert negatives_batch.shape == true_z.shape, f"negatives_batch {negatives_batch.shape} should be the same shape as true_z {true_z.shape}"
-            negatives_seq_ind = torch.randint(0, seq_len, (B, seq_len, self.num_negatives), device=true_z.device)
-            negatives_batch = torch.gather(negatives_batch.unsqueeze(2).expand(-1, -1, self.num_negatives, -1),  # Expand to (B, seq_len, num_negative, F)
-                                    dim=1,  # Sample along the time dimension (originally dimension 1)
-                                    index=negatives_seq_ind.unsqueeze(-1).expand(-1, -1, -1, feat))
+            if self.negative_same_recording and mask_t is not None:
+                # gather False indices in mask_t for each batch item
+                non_masked_inds = [torch.nonzero(~item)[:, 0] for item in mask_t]
+                # for each batch item, sample with replacement self.num_negatives samples from negative_inds
+                negatives_inds = []
+                for i in range(B):
+                    negatives_inds.append(non_masked_inds[i][torch.randint(0, non_masked_inds[i].shape[0], (self.num_negatives,))])
+                negatives_inds = torch.stack(negatives_inds, dim=0).to(true_z.device) # (B, num_negatives)
+                assert negatives_inds.shape == (B, self.num_negatives), f"negatives indices {negatives_inds.shape} should be (B, num_negatives)"
+                assert ~torch.any(torch.gather(mask_t.to(true_z.device), dim=1, index=negatives_inds)), f"mask[negative_inds] should be False"
+                
+                negatives_batch = torch.gather(true_z, dim=1, index=negatives_inds.unsqueeze(-1).expand(-1, -1, feat)) # (B, num_negatives, F)
+                negatives_batch = negatives_batch.unsqueeze(1) # (B, 1, num_negatives, F)
+                assert negatives_batch.shape == (B, 1, self.num_negatives, feat), f"negatives {negatives_batch.shape} should be (B, num_negatives, F)"
+                new_size = (B, seq_len, self.num_negatives, feat)
+                negatives_batch = negatives_batch.expand(new_size)
+            else:
+                # create negative batch by randomize batch elements
+                negatives_batch_ind = torch.randint(0, B, (B,), device=true_z.device)
+                negatives_batch = true_z[negatives_batch_ind] # (B, seq_len, F)
+                assert negatives_batch.shape == true_z.shape, f"negatives_batch {negatives_batch.shape} should be the same shape as true_z {true_z.shape}"
+                negatives_inds = torch.randint(0, seq_len, (B, seq_len, self.num_negatives), device=true_z.device)
+                negatives_batch = torch.gather(negatives_batch.unsqueeze(2).expand(-1, -1, self.num_negatives, -1),  # Expand to (B, seq_len, num_negative, F)
+                                        dim=1,  # Sample along the time dimension (originally dimension 1)
+                                        index=negatives_inds.unsqueeze(-1).expand(-1, -1, -1, feat))
+
+            # negatives_batch, negatives_seq_ind = self._generate_negatives_from_batch(true_z)
             negatives = F.cosine_similarity(c.unsqueeze(-2), negatives_batch, dim=-1) / self.temp # (B, seq_len, num_negatives)
 
             # assert positives.shape == negatives.shape, f"positives {positives.shape} and negatives {negatives.shape} should be the same shape"
@@ -422,19 +653,17 @@ class CPC(SSLTask):
 
             unmasked_z = z.clone()
             
-            mask = None
             mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
             # make simple mask: only predict the last token
             # mask = torch.zeros((batch_size, samples), dtype=torch.bool)
             # mask[:, -1] = True
 
-            if mask is not None:
-                z.transpose(2, 1)[mask] = self.mask_replacement
+            z.transpose(2, 1)[mask] = self.mask_replacement
 
             c = self.contextualizer(z)
             # c - (B, F, seq_len) 
 
-            loss = self.compute_cross_batch_loss(unmasked_z, c)
+            loss = self.compute_contrastive_loss(unmasked_z, c, mask)
 
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
@@ -459,7 +688,7 @@ class CPC(SSLTask):
 
             c = self.contextualizer(z)
             
-            loss = self.compute_cross_batch_loss(unmasked_z, c)
+            loss = self.compute_contrastive_loss(unmasked_z, c, mask)
 
             self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
@@ -475,18 +704,9 @@ class CPC(SSLTask):
 
             unmasked_z = z.clone()
             
-            mask = None
-            # mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
-            # make simple mask: only predict the last token
-            # mask = torch.zeros((batch_size, samples), dtype=torch.bool)
-            # mask[:, -1] = True
-
-            if mask is not None:
-                z.transpose(2, 1)[mask] = self.mask_replacement
-
             c = self.contextualizer(z)
             
-            loss = self.compute_cross_batch_loss(unmasked_z, c)
+            loss = self.compute_contrastive_loss(unmasked_z, c)
 
             self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
@@ -727,6 +947,7 @@ class Regression(SSLTask):
             for metric, fcn in zip(metrics, fcns):
                 score = fcn(Z, Y)
                 self.log(f'val_Regressor/{metric}', score, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        
         
     def dataset(self, datasets: List[BaseConcatDataset]):
         return BaseConcatDataset(datasets)

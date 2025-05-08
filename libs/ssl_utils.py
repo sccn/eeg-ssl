@@ -6,7 +6,6 @@ import lightning as L
 import importlib
 import pathlib
 from lightning.pytorch.utilities import grad_norm
-import braindecode
 
 class LitSSL(L.LightningModule):
     def __init__(self, 
@@ -37,6 +36,7 @@ class LitSSL(L.LightningModule):
     
     def on_validation_start(self):
         for evaluator in self.evaluators:
+            print('number of examples', len(evaluator.x))
             assert len(evaluator.labels) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
     
     def validation_step(self, batch, batch_idx):
@@ -94,7 +94,7 @@ class LitSSL(L.LightningModule):
         print('learning rate', self.learning_rate)
         optimizer = optim.Adamax(self.parameters(), lr=self.learning_rate)
         return optimizer
-
+    
 ############### Helper functions ###############
 def instantiate_module(module_class_str, kwargs):
     """

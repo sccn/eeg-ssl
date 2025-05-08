@@ -8,6 +8,7 @@ from torch import nn
 from math import ceil
 from einops.layers.torch import Rearrange
 from braindecode.models.base import EEGModuleMixin
+from libs.ssl_model import BENDRContextualizer
 
 
 class BENDR(EEGModuleMixin, nn.Module):
@@ -34,7 +35,7 @@ class BENDR(EEGModuleMixin, nn.Module):
         enc_width=(3, 2, 2, 2, 2, 2),
         enc_downsample=(3, 2, 2, 2, 2, 2),
         # extra model parameters
-        start_token=-5,  # Value for start token embedding
+        start_token=None, #start_token=-5,  # Value for start token embedding
         final_layer=True,  # Whether to include the final linear layer
     ):
         # Initialize EEGModuleMixin first if it provides n_chans, n_outputs etc.
@@ -66,7 +67,8 @@ class BENDR(EEGModuleMixin, nn.Module):
         )
 
         # Contextualizer: Use parameters from __init__
-        self.contextualizer = _BENDRContextualizer(
+        # self.contextualizer = _BENDRContextualizer(
+        self.contextualizer = BENDRContextualizer(
             in_features=self.encoder.encoder_h,  # Use the output feature size of the encoder
             hidden_feedforward=contextualizer_hidden,
             heads=transformer_heads,

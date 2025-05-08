@@ -1,5 +1,5 @@
 # lightning.pytorch==2.5.0
-seed_everything: 4
+seed_everything: 3
 trainer:
   accelerator: auto
   strategy: auto
@@ -88,20 +88,24 @@ trainer:
 model:
   class_path: libs.ssl_task.CPC.CPCLit
   init_args:
-    encoder_path: libs.ssl_model.ConvEncoderBENDR
+    # encoder_path: libs.ssl_model.ConvEncoderBENDR
+    encoder_path: libs.bendr._ConvEncoderBENDR
     encoder_kwargs:
       in_features: 128
       encoder_h: 512
       dropout: 0.1
-    contextualizer_path: libs.ssl_model.BENDRContextualizer
+    # contextualizer_path: libs.ssl_model.BENDRContextualizer
+    contextualizer_path: libs.bendr._BENDRContextualizer
+    # contextualizer_path: libs.ssl_model.BENDRLSTM
     contextualizer_kwargs:
       in_features: 512
       start_token: null
     encoder_emb_size: 512
-    learning_rate: 0.00005 #0.005
+    learning_rate: 0.0000001 #0.005
     mask_span: 1
     mask_rate: 0.1
-    seed: 4
+    negative_same_recording: true
+    seed: 3
 data:
   ssl_task:
       class_path: libs.ssl_task.CPC
