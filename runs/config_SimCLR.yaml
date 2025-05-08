@@ -110,12 +110,10 @@ data:
   data_dir: /mnt/nemar/openneuro
   cache_dir: data
   datasets:
-  - ds005505
   - ds005506
   - ds005507
   - ds005508
   - ds005509
-  - ds005510
   - ds005511
   - ds005512
   - ds005514
@@ -124,6 +122,7 @@ data:
   target_label: p_factor
   overwrite_preprocessed: false
   val_release: ds005505
+  test_release: ds005510
   use_ssl_sampler_for_val: true
 optimizer: null
 lr_scheduler: null

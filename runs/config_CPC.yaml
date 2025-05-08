@@ -113,12 +113,10 @@ data:
   data_dir: /mnt/nemar/openneuro
   cache_dir: data-no_cz-robust_scaled
   datasets:
-  - ds005505
   - ds005506
   - ds005507
   - ds005508
   - ds005509
-  # - ds005510
   - ds005511
   - ds005512
   - ds005514

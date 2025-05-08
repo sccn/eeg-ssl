@@ -30,7 +30,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         num_workers=0,
         data_dir='/mnt/nemar/openneuro',
         cache_dir='data',
-        datasets:list[str]=None,
+        datasets:list[str]=None, # traing datasets
         target_label='age',
         overwrite_preprocessed=False,
         mapping=None,
@@ -58,11 +58,15 @@ class SSLHBNDataModule(L.LightningDataModule):
 
     def prepare_data(self):
         # create preprocessed data if not exists
-        print(f"Using datasets: {self.datasets}")
+        print(f"Train releases: {self.datasets}")
         print(f"Validation release: {self.val_release}")
         print(f"Test release: {self.test_release}")
+
+        assert self.val_release not in self.datasets, "Validation release should not be in training releases"
+        assert self.test_release not in self.datasets, "Test release should not be in training releases"
+
         selected_tasks = ['RestingState']
-        for dsnumber in self.datasets:
+        for dsnumber in [*self.datasets, self.val_release, self.test_release]:
             savedir = self.cache_dir / f'{dsnumber}_preprocessed'
             if not os.path.exists(savedir) or self.overwrite_preprocessed:
                 # ds = HBNDataset(dsnumber, data_path=self.data_dir / dsnumber, tasks=selected_tasks, num_workers=-1, preload=False)
@@ -88,9 +92,20 @@ class SSLHBNDataModule(L.LightningDataModule):
         return data
             
     def preprocess(self, ds, savedir):
-        from sklearn.preprocessing import scale
+        from sklearn.preprocessing import scale as standard_scale
         os.makedirs(savedir, exist_ok=True)
 
+        def global_norm(data, method='standard'):
+            if method == 'standard':
+                center = np.mean(data)  
+                variance = np.std(data)  
+            elif method == 'robust':
+                center = np.median(data)  
+                variance = np.percentile(data, 75) - np.percentile(data, 25)
+            # standard scale to 0 mean and 1 std using statistics of the entire recording
+            data = (data - center) / variance # normalize preserving batch dim
+            return data
+        
         sampling_rate = 250 # resample to follow the tutorial sampling rate
         # Factor to convert from uV to V
         factor = 1e6
@@ -102,9 +117,9 @@ class SSLHBNDataModule(L.LightningDataModule):
             Preprocessor('resample', sfreq=sampling_rate),
             Preprocessor('set_eeg_reference', ref_channels=['Cz']),
             # Preprocessor('crop', tmin=10),  # crop first 10 seconds as begining of noise recording
-            # Preprocessor('drop_channels', ch_names=['Cz']),  # discard Cz
-            # Preprocessor(lambda data: np.multiply(data, factor)),  # Convert from V to uV    
-            # Preprocessor(scale, channel_wise=True), # normalization for deep learning
+            Preprocessor('drop_channels', ch_names=['Cz']),  # discard Cz
+            Preprocessor(global_norm, method='robust'),  
+            # Preprocessor(standard_scale, channel_wise=True), # normalization for deep learning
         ]
         # Transform the data
         preprocess(ds, preprocessors, save_dir=savedir, overwrite=True, n_jobs=1)
