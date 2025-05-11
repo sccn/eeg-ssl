@@ -2,11 +2,13 @@ import sys
 sys.path.insert(0, '/home/dung/eeg-ssl')
 import os
 import torch
+import torch.nn as nn
 from torchmetrics import Metric
 from torchmetrics.functional.regression import concordance_corrcoef, r2_score, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error
 from torchmetrics.utilities import dim_zero_cat
 import numpy as np
 from collections import defaultdict
+
 
 class RankMe(Metric):
     '''
@@ -44,7 +46,7 @@ class Regressor(Metric):
     '''
     Validation using regression on target label
     '''
-    def __init__(self, projection_head=None, **kwargs):
+    def __init__(self, projection_head=True, **kwargs):
         super().__init__(**kwargs)
         self.add_state("x", default=[], dist_reduce_fx='cat')
         self.add_state("labels", default=[], dist_reduce_fx='cat')
@@ -67,14 +69,19 @@ class Regressor(Metric):
         labels = dim_zero_cat(self.labels).float()
         subjects_encoded = dim_zero_cat(self.subjects).float()
         
-        if self.projection_head is not None:
+        if not self.projection_head:
+            print('Regressor: using projection head')
             from sklearn.neural_network import MLPRegressor
-            regr = MLPRegressor(random_state=1, max_iter=2000, tol=0.1)
+            # from sklearn.linear_model import LinearRegression
+            regr = MLPRegressor(random_state=1, max_iter=100)
+            print(regr.n_layers_)
+            # Define model
             x_clone = x.clone().cpu()
             regr.fit(x_clone, labels.cpu())
             preds = regr.predict(x_clone)
             preds = torch.from_numpy(preds).to(x.device)
         else:
+            print('Regressor: not using projection head')
             preds = x
         # compute sample-level metrics
         metrics = ['R2',    'concordance',      'NRMSE',                        'mse',                  'mae']

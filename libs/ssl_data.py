@@ -37,6 +37,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         val_release='ds005505',
         test_release='ds005510',
         use_ssl_sampler_for_val=False,
+        train_percent=1.0,
     ):
         super().__init__()
         self.ssl_task = ssl_task
@@ -54,6 +55,7 @@ class SSLHBNDataModule(L.LightningDataModule):
         self.val_release = val_release
         self.test_release = test_release
         self.use_ssl_sampler_for_val = use_ssl_sampler_for_val
+        self.train_percent = train_percent
         self.save_hyperparameters()
 
     def prepare_data(self):
@@ -129,6 +131,11 @@ class SSLHBNDataModule(L.LightningDataModule):
     def get_and_filter_dataset(self, dataset_type='train'):
         if dataset_type == 'train':
             all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{dsnumber}_preprocessed', preload=False) for dsnumber in self.datasets if dsnumber != self.val_release and dsnumber != self.test_release])
+            if self.train_percent < 1.0:
+                subjects = np.unique(all_ds.description['subject'])
+                subj_train, _ = train_test_split(
+                    subjects, train_size=self.train_percent, random_state=0)
+                all_ds = BaseConcatDataset([ds for ds in all_ds.datasets if ds.description['subject'] in subj_train])
         elif dataset_type == 'valid':
             all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{self.val_release}_preprocessed', preload=False)])
         elif dataset_type == 'test':

@@ -18,6 +18,7 @@ class LitSSL(L.LightningModule):
     ):
         super().__init__()
         self.encoder = instantiate_module(encoder_path, encoder_kwargs)
+        print('encoder', self.encoder)
         self.encoder.train()
         self.emb_size = emb_size
         self.encoder_emb_size = encoder_emb_size
@@ -36,8 +37,8 @@ class LitSSL(L.LightningModule):
     
     def on_validation_start(self):
         for evaluator in self.evaluators:
-            print('number of examples', len(evaluator.x))
             assert len(evaluator.labels) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
+            assert len(evaluator.x) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
     
     def validation_step(self, batch, batch_idx):
         X, Y, _, subjects = batch

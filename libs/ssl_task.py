@@ -508,6 +508,7 @@ class CPC(SSLTask):
             #     start_token=None,
             # )
             self.contextualizer = instantiate_module(contextualizer_path, contextualizer_kwargs)
+            print('contextualizer', self.contextualizer)
             # Initialize replacement vector with standard normal
             self.mask_replacement = torch.nn.Parameter(torch.normal(0, self.encoder_emb_size**(-0.5), size=(self.encoder_emb_size,)),
                                                     requires_grad=True)
@@ -525,7 +526,7 @@ class CPC(SSLTask):
             self.num_negatives = num_negatives
             self.negative_same_recording = negative_same_recording
 
-            self.evaluators = [Regressor(projection_head=True)]
+            self.evaluators = [Regressor(projection_head=False)]
         
         def _generate_negatives(self, z):
             """Generate negative samples to compare each sequence location against"""
@@ -669,6 +670,36 @@ class CPC(SSLTask):
 
             return loss
         
+        def embed(self, x):
+            z = self.encoder()
+            # z - (B, F, seq_len)
+            c = self.contextualizer(z)
+            c_last = c[:, :, -1]
+            return c_last
+
+        def on_validation_epoch_start(self):
+            if self.trainer and self.trainer.datamodule:
+                train_loader = self.trainer.datamodule.train_dataloader()
+                embeddings = []
+                labels = []
+                with torch.no_grad():
+                    for batch in train_loader:
+                        x, y = batch[0], batch[1]
+                        c = self.embed(x)
+                        embeddings.append(c)
+                        labels.append(y)
+                    embeddings = torch.cat(embeddings, dim=0)
+                    labels = torch.cat(labels, dim=0)
+
+                    from sklearn.neural_network import MLPRegressor
+                    # from sklearn.linear_model import LinearRegression
+                    regr = MLPRegressor(random_state=1, early_stopping=True)
+                    # Define model
+                    regr.fit(embeddings.cpu(), labels.cpu())
+                    self.regressor = regr
+
+            return super().on_validation_epoch_start()
+
         def validation_step(self, batch, batch_idx):
             z = self.encoder(batch[0])
             batch_size, feat, samples = z.shape
@@ -694,7 +725,9 @@ class CPC(SSLTask):
 
             for evaluator in self.evaluators:
                 c_last = c[:, :, -1]
-                evaluator((c_last, Y, subjects))
+                preds = self.regressor.predict(c_last.cpu())
+                preds = torch.from_numpy(preds).to(x.device)
+                evaluator((preds, Y, subjects))
         
         def test_step(self, batch, batch_idx):
             z = self.encoder(batch[0])
@@ -901,14 +934,11 @@ class Regression(SSLTask):
         super().__init__()
             
     class RegressionLit(LitSSL):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, projection_head=True, loss_fcn='torch.nn.functional.mse_loss', *args, **kwargs):
             super().__init__(*args, **kwargs)
-            if isinstance(self.encoder, braindecode.models.deep4.Deep4Net):
-                print('set bias')
-                with torch.no_grad():
-                    self.encoder.final_layer.conv_classifier.bias.copy_(torch.tensor(0.04))
 
-            self.evaluators = [Regressor()]
+            self.evaluators = [Regressor(projection_head)]
+            self.loss_fcn = eval(loss_fcn)
             
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
@@ -916,7 +946,8 @@ class Regression(SSLTask):
             X, Y = batch[0], batch[1]
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X)) 
-            loss = nn.functional.mse_loss(Z, Y.to(torch.float32))
+
+            loss = self.loss_fcn(Z, Y.to(torch.float32))
 
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
@@ -934,6 +965,12 @@ class Regression(SSLTask):
             Z = torch.squeeze(self.encoder(X))
             for evaluator in self.evaluators:
                 evaluator.update((Z, Y, subjects))
+            
+            metrics = ['R2',    'concordance',      'mse',                'mae']
+            fcns = [r2_score, concordance_corrcoef, mean_squared_error, mean_absolute_error]
+            for metric, fcn in zip(metrics, fcns):
+                score = fcn(Z, Y)
+                self.log(f'val_Regressor/{metric}', score, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         
         def validation_step_not_metrics(self, batch, batch_idx):
             X, Y = batch[0], batch[1]

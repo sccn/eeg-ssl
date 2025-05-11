@@ -85,8 +85,13 @@ class BENDR(EEGModuleMixin, nn.Module):
         if self.include_final_layer:
             # Input to LazyLinear will be [batch_size, encoder_h] after taking last timestep
             linear = nn.Linear(in_features=in_features, out_features=self.n_outputs)
-            self.final_layer = nn.utils.parametrizations.weight_norm(
-                linear, name="weight", dim=1
+            # self.final_layer = nn.utils.parametrizations.weight_norm(
+            #     linear, name="weight", dim=1
+            # )
+            self.final_layer = nn.Sequential(
+                nn.Linear(in_features=in_features, out_features=100),
+                nn.ReLU(),
+                nn.Linear(in_features=100, out_features=self.n_outputs),
             )
 
     def forward(self, x):

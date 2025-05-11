@@ -17,7 +17,7 @@ trainer:
       id: null
       anonymous: null
       project: hbn-regression
-      log_model: all
+      log_model: true
       experiment: null
       prefix: ''
       checkpoint_name: null
@@ -93,16 +93,17 @@ model:
     encoder_kwargs:
       n_outputs: 1
       n_chans: 128
-      n_times: 500
+      n_times: 5000
       activation: torch.nn.GELU
       # activation_first_conv_nonlin: torch.nn.ELU
       # activation_later_conv_nonlin: torch.nn.ELU
     learning_rate: 0.00005
+    loss_fcn: torch.nn.functional.l1_loss
     seed: 3
 data:
   ssl_task:
       class_path: libs.ssl_task.Regression
-  window_len_s: 2
+  window_len_s: 20
   batch_size: 64
   num_workers: 30
   data_dir: /mnt/nemar/openneuro
