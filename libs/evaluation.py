@@ -74,7 +74,6 @@ class Regressor(Metric):
             from sklearn.neural_network import MLPRegressor
             # from sklearn.linear_model import LinearRegression
             regr = MLPRegressor(random_state=1, max_iter=100)
-            print(regr.n_layers_)
             # Define model
             x_clone = x.clone().cpu()
             regr.fit(x_clone, labels.cpu())
@@ -157,4 +156,77 @@ def get_subject_predictions(subjects, sample_predictions):
             'IQR': np.quantile(predictions, 0.75) - np.quantile(predictions, 0.25)
         }
     return subject_predictions
+
+
+def train_projection_layer_for_eval(model: nn.Module, train_dataloader: torch.utils.data.DataLoader, val_dataloader: torch.utils.data.DataLoader,
+                                    encoder_emb_size=512, n_outputs=1, loss_fn=torch.nn.functional.mse_loss):
+    from tqdm import tqdm
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # verify weights of model have not changed
+    for param in model.parameters():
+        param.requires_grad = False
+    model.to(device)
+    model.eval()
+
+    projection_layer = nn.Sequential(
+        nn.Linear(encoder_emb_size, 100),
+        nn.ReLU(),
+        nn.Linear(100, n_outputs)
+    )
+
+    # train projection layer
+    projection_layer.to(device)
+    projection_layer.train()
+    optimizer = torch.optim.Adam(projection_layer.parameters(), lr=1e-3)
+    print('Training projection layer...')
+    for e in range(10):
+        epoch_loss = 0
+        for batch in tqdm(train_dataloader):
+            optimizer.zero_grad()
+
+            x, y = batch[0], batch[1]
+            x, y = x.to(device), y.to(device)
+            x, y = x.float(), y.float()
+
+            z = model.embed(x)
+
+            preds = projection_layer(z).squeeze()
+            
+            loss = loss_fn(preds, y)
+            epoch_loss += loss.item()
+
+            loss.backward()
+            optimizer.step()
+
+        epoch_loss /= len(train_dataloader)
+        print(f'Epoch {e} - Loss: {epoch_loss:.4f}')
+
+    # evaluate on validation set
+    print('Evaluating on validation set...')
+    projection_layer.eval()
+    preds = []
+    labels = []
+    for batch in tqdm(val_dataloader):
+        x, y = batch[0], batch[1]
+        x, y = x.to(device), y.to(device)
+
+        with torch.no_grad():
+            z = model.embed(x)
+            preds.append(projection_layer(z))
+            labels.append(y)
+    preds = torch.cat(preds, dim=0).squeeze()
+    labels = torch.cat(labels, dim=0).squeeze()
+    metrics = ['R2',    'concordance',      'mse',                'mae']
+    fcns = [r2_score, concordance_corrcoef, mean_squared_error, mean_absolute_error]
+    score = {}
+    for metric, fcn in zip(metrics, fcns):
+        score[metric] = fcn(torch.tensor(preds), labels).item()
+
+    # print dictionary key value pair one per line
+    print('Validation scores:')
+    for k, v in score.items():
+        print(f'\t{k}: {v:.4f}')
+
+    return score
 
