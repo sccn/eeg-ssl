@@ -44,10 +44,10 @@ trainer:
   callbacks:
     class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
-      monitor: val_Regressor/mae
-      mode: min
+      # monitor: val_Regressor/mae
+      # mode: min
       save_last: true
-      save_top_k: 10
+      # save_top_k: 10
       save_on_train_epoch_end: true
       every_n_epochs: 10
       save_weights_only: false

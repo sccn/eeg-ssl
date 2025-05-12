@@ -18,7 +18,6 @@ class LitSSL(L.LightningModule):
     ):
         super().__init__()
         self.encoder = instantiate_module(encoder_path, encoder_kwargs)
-        print('encoder', self.encoder)
         self.encoder.train()
         self.emb_size = emb_size
         self.encoder_emb_size = encoder_emb_size
@@ -30,7 +29,7 @@ class LitSSL(L.LightningModule):
         self.save_hyperparameters()
         
     def embed(self, x):
-        return self.embedder(self.encoder(x))
+        pass
 
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
