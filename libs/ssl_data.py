@@ -134,7 +134,7 @@ class SSLHBNDataModule(L.LightningDataModule):
             if self.train_percent < 1.0:
                 subjects = np.unique(all_ds.description['subject'])
                 subj_train, _ = train_test_split(
-                    subjects, train_size=self.train_percent, random_state=0)
+                    subjects, train_size=self.train_percent)
                 all_ds = BaseConcatDataset([ds for ds in all_ds.datasets if ds.description['subject'] in subj_train])
         elif dataset_type == 'valid':
             all_ds = BaseConcatDataset([load_concat_dataset(path=self.cache_dir / f'{self.val_release}_preprocessed', preload=False)])
