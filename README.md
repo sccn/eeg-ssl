@@ -19,7 +19,7 @@ Place the zip file in ./notebooks/data
 
 Run the notebook ./notebooks/HBN_braindecode.ipynb
 
-## Original video from Grandfort
+## Original video from Gramfort
 
 https://www.youtube.com/watch?v=gm3a7T2bmnc
 
