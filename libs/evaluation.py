@@ -59,10 +59,8 @@ class Regressor(Metric):
         subjects = data[2]
         self.x.append(x)
         self.labels.append(labels)
-        subjects_encoded = encode_subjects(subjects).to(device=self.device)
-        # print('encoded subjects', subjects_encoded)
+        subjects_encoded = encode_subjects(subjects, device=x.device)
         self.subjects.append(subjects_encoded)
-        # self.subjects.extend(subjects)
 
     def compute(self) -> torch.Tensor:
         x = dim_zero_cat(self.x).float()
@@ -96,32 +94,32 @@ class Regressor(Metric):
         subject_predictions = get_subject_predictions(subjects, preds)
         subject_labels_predictions = []
         for subject, label in subject_labels.items():
-            subject_labels_predictions.append((subject, label, subject_predictions[subject])) # guarantee the same subject for label and prediction
+            subject_labels_predictions.append([subject, label, subject_predictions[subject]]) # guarantee the same subject for label and prediction
         if len(subject_labels_predictions) > 1:
-            subject_labels = torch.from_numpy(np.array([label for _, label, _ in subject_labels_predictions]))
-            subject_predictions_with_mean = torch.from_numpy(np.array([pred['mean'] for _, _, pred in subject_labels_predictions]))
-            subject_predictions_with_median = torch.from_numpy(np.array([pred['median'] for _, _, pred in subject_labels_predictions]))
-            subject_predictions_iqr = np.array([pred['IQR'] for _, _, pred in subject_labels_predictions])
-            subject_predictions_std = np.array([pred['std'] for _, _, pred in subject_labels_predictions])
+            subject_labels = torch.tensor([label for _, label, _ in subject_labels_predictions])
+            subject_predictions_with_mean = torch.tensor([pred['mean'] for _, _, pred in subject_labels_predictions])
+            subject_predictions_with_median = torch.tensor([pred['median'] for _, _, pred in subject_labels_predictions])
+            subject_predictions_iqr = torch.tensor([pred['IQR'] for _, _, pred in subject_labels_predictions])
+            subject_predictions_std = torch.tensor([pred['std'] for _, _, pred in subject_labels_predictions])
             
             for metric, fcn in zip(metrics, fcns):
                 scores[f"subject_with_mean_{metric}"] = fcn(subject_predictions_with_mean, subject_labels)
                 scores[f"subject_with_median_{metric}"] = fcn(subject_predictions_with_median, subject_labels)
-            scores['subject_iqr_mean'] = np.mean(subject_predictions_iqr)
-            scores['subject_iqr_median'] = np.median(subject_predictions_iqr)
-            scores['subject_iqr_std'] = np.std(subject_predictions_iqr)
-            scores['subject_iqr_iqr'] = np.quantile(subject_predictions_iqr, 0.75) - np.quantile(subject_predictions_iqr, 0.25)
-            scores['subject_std_mean'] = np.mean(subject_predictions_std)
-            scores['subject_std_median'] = np.median(subject_predictions_std)
-            scores['subject_std_std'] = np.std(subject_predictions_std)
-            scores['subject_std_iqr'] = np.quantile(subject_predictions_std, 0.75) - np.quantile(subject_predictions_std, 0.25)
+            scores['subject_iqr_mean'] = torch.mean(subject_predictions_iqr)
+            scores['subject_iqr_median'] = torch.median(subject_predictions_iqr)
+            scores['subject_iqr_std'] = torch.std(subject_predictions_iqr)
+            scores['subject_iqr_iqr'] = torch.quantile(subject_predictions_iqr, 0.75) - torch.quantile(subject_predictions_iqr, 0.25)
+            scores['subject_std_mean'] = torch.mean(subject_predictions_std)
+            scores['subject_std_median'] = torch.median(subject_predictions_std)
+            scores['subject_std_std'] = torch.std(subject_predictions_std)
+            scores['subject_std_iqr'] = torch.quantile(subject_predictions_std, 0.75) - torch.quantile(subject_predictions_std, 0.25)
         
         self.reset()
 
         return scores
 
-def encode_subjects(subjects):
-    return torch.tensor([[ord(ch) for ch in subj] for subj in subjects])
+def encode_subjects(subjects, device):
+    return torch.tensor([[ord(ch) for ch in subj] for subj in subjects], device=device)
 
 def decode_subjects(subjects):
     return [''.join((chr(int(subjects[s,n].item())) for n in range(subjects.shape[1]))) for s in range(subjects.shape[0])]
@@ -130,15 +128,16 @@ def get_subjects_labels(subjects, labels):
     assert len(subjects) == labels.shape[0]
     subject_labels = defaultdict(list)
     for i, subject in enumerate(subjects):
-        subject_labels[subject].append(labels[i].cpu().numpy())
+        subject_labels[subject].append(labels[i])
     
     # check that all labels are the same for each subject
-    for subject, labels in subject_labels.items():
-        if len(np.unique(labels)) > 1:
+    for subject, lbls in subject_labels.items():
+        if len(torch.unique(torch.tensor(lbls))) > 1:
             print(subject)
-            print(np.unique(labels))
-            raise ValueError(f"Subject {subject} has different labels: {set(labels)}")
-        subject_labels[subject] = labels[0]
+            print(torch.unique(torch.tensor(lbls)))
+            raise ValueError(f"Subject {subject} has different labels: {set(lbls)}")
+        # unique label --> assign to subject
+        subject_labels[subject] = lbls[0]
     return subject_labels
 
 def get_subject_predictions(subjects, sample_predictions):
