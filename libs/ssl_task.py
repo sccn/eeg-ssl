@@ -1,3 +1,4 @@
+from collections import defaultdict
 import warnings
 from braindecode.datasets import BaseDataset, BaseConcatDataset
 from braindecode.samplers import RecordingSampler, RelativePositioningSampler #, DistributedRecordingSampler, DistributedRelativePositioningSampler
@@ -906,13 +907,14 @@ class Regression(SSLTask):
     """
     def __init__(self):
         super().__init__()
-            
+
     class RegressionLit(LitSSL):
-        def __init__(self, projection_head=True, loss_fcn='torch.nn.functional.mse_loss', *args, **kwargs):
+        def __init__(self, loss_fcn='torch.nn.functional.mse_loss', *args, **kwargs):
             super().__init__(*args, **kwargs)
 
-            self.evaluators = [Regressor(projection_head)]
             self.loss_fcn = eval(loss_fcn)
+            self.metrics = ['R2',    'concordance',      'mse',                'mae']
+            self.metric_fcns = [r2_score, concordance_corrcoef, mean_squared_error, mean_absolute_error]
             
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
@@ -925,26 +927,69 @@ class Regression(SSLTask):
 
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
-            metrics = ['R2',    'concordance',      'mse',                'mae']
-            fcns = [r2_score, concordance_corrcoef, mean_squared_error, mean_absolute_error]
-            for metric, fcn in zip(metrics, fcns):
+            for metric, fcn in zip(self.metrics, self.metric_fcns):
                 score = fcn(Z, Y)
                 self.log(f'train_Regressor/{metric}', score, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
             return loss
 
+        def on_validation_epoch_start(self):
+            # reset subject data
+            self.subject_data = defaultdict(lambda: defaultdict(list)) # {subject: {'preds': [], 'labels': []} dictionary
+
         def validation_step(self, batch, batch_idx):
             X, Y, subjects = batch[0], batch[1], batch[3]
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X))
-            for evaluator in self.evaluators:
-                evaluator.update((Z, Y, subjects))
-            
-            metrics = ['R2',    'concordance',      'mse',                'mae']
-            fcns = [r2_score, concordance_corrcoef, mean_squared_error, mean_absolute_error]
-            for metric, fcn in zip(metrics, fcns):
+            assert len(Z.shape) == len(Y.shape) == 1, f"Z {Z.shape} and Y {Y.shape} should be 1D tensors"
+
+            # sample level metrics
+            for metric, fcn in zip(self.metrics, self.metric_fcns):
                 score = fcn(Z, Y)
                 self.log(f'val_Regressor/{metric}', score, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+
+            # collect subject data
+            for i, subj in enumerate(subjects):
+                self.subject_data[subj]['preds'].append(Z[i])
+                self.subject_data[subj]['labels'].append(Y[i]) 
+        
+        def on_validation_epoch_end(self):
+            # compute subject level metrics
+            # aggregate
+            subject_labels, subject_mean_preds, subject_median_preds = [], [], []
+            subject_iqrs, subject_stds = [], []
+
+            for subj, data in self.subject_data.items():
+                preds, labels = torch.stack(data['preds']), torch.stack(data['labels'])
+                assert labels.unique().numel() == 1, f"Labels for subject {subj} should be the same"
+
+                subject_labels.append(labels[0])
+                subject_mean_preds.append(preds.mean())
+                subject_median_preds.append(preds.median())
+                subject_iqrs.append(preds.quantile(0.75) - preds.quantile(0.25))
+                subject_stds.append(preds.std())
+
+            # stack all list of tensors
+            subject_labels = torch.stack(subject_labels)
+            subject_mean_preds = torch.stack(subject_mean_preds)
+            subject_median_preds = torch.stack(subject_median_preds)
+            subject_iqrs = torch.stack(subject_iqrs)
+            subject_stds = torch.stack(subject_stds)
+
+            # compute metrics
+            scores = {}
+            for metric, fcn in zip(self.metrics, self.metric_fcns):
+                scores[f"subject_with_mean_{metric}"] = fcn(subject_mean_preds, subject_labels)
+                scores[f"subject_with_median_{metric}"] = fcn(subject_median_preds, subject_labels)
+            
+            scores['subject_iqr_mean'] = subject_iqrs.mean()
+            scores['subject_iqr_median'] = subject_iqrs.median()
+            scores['subject_std_mean'] = subject_stds.mean()
+            scores['subject_std_median'] = subject_stds.median()
+
+            for k, v in scores.items():
+                self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
+
         
     def dataset(self, datasets: List[BaseConcatDataset]):
         return BaseConcatDataset(datasets)
