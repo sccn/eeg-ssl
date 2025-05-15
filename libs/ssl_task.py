@@ -13,8 +13,8 @@ from torch import optim
 from .ssl_utils import LitSSL, instantiate_module
 from .ssl_model import BENDRContextualizer, ConvEncoderBENDR, BENDRLSTM
 from .evaluation import RankMe, Regressor, get_subjects_labels, get_subject_predictions
-from torchmetrics.functional.classification import binary_accuracy
-from torchmetrics.functional import f1_score
+from torchmetrics.functional.classification import binary_accuracy, binary_f1_score
+from torchmetrics.functional import f1_score, accuracy
 from lightning.pytorch.utilities import grad_norm
 from torchmetrics.functional.regression import concordance_corrcoef, r2_score, normalized_root_mean_squared_error, mean_squared_error, mean_absolute_error
 import braindecode
@@ -916,6 +916,16 @@ class Regression(SSLTask):
             self.metrics = ['R2',    'concordance',      'mse',                'mae']
             self.metric_fcns = [r2_score, concordance_corrcoef, mean_squared_error, mean_absolute_error]
             
+        def embed(self, x):
+            if type(self.encoder) == braindecode.models.deep4.Deep4Net:
+                for name, module in self.encoder.named_children():
+                    if 'final_layer' not in name:
+                        x = module(x)
+            else:
+                x = self.encoder(x)
+            
+            return x
+
         def training_step(self, batch, batch_idx):
             # training_step defines the train loop.
             # it is independent of forward
@@ -987,6 +997,7 @@ class Regression(SSLTask):
             scores['subject_std_mean'] = subject_stds.mean()
             scores['subject_std_median'] = subject_stds.median()
 
+            # log metrics
             for k, v in scores.items():
                 self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
 
@@ -1010,36 +1021,38 @@ class Classification(SSLTask):
         return BaseConcatDataset(datasets)
 
     class ClassificationLit(LitSSL):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, task='binary', num_classes=2, *args, **kwargs):
             super().__init__(*args, **kwargs)
+            self.task = task
+            self.num_classes = num_classes
 
-        def normalize_data(self, x):
-            mean = x.mean(dim=-1, keepdim=True)
-            std = x.std(dim=-1, keepdim=True) + 1e-7  # add small epsilon for numerical stability
-            x = (x - mean) / std
+        def embed(self, x):
+            x = self.encoder(x)
+            
             return x
 
         def training_step(self, batch, batch_idx):
-            # self.train()
-            # training_step defines the train loop.
-            # it is independent of forward
             X, Y = batch[0], batch[1]
-            Z = self.encoder(self.normalize_data(X))
-            predictions = torch.argmax(Z, dim=1) 
+            Z = self.encoder(X).squeeze()
+            Y = Y.to(torch.long)
+
             loss = nn.functional.cross_entropy(Z, Y)
+            _, preds = Z.max(1)
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-            self.log('train_accuracy', binary_accuracy(predictions, Y), on_step=True, on_epoch=True, prog_bar=True, logger=True)
-            self.log('train_f1', f1_score(predictions, Y, task='binary'), on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            self.log('train_accuracy', accuracy(preds, Y, task=self.task, num_classes=self.num_classes), on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            self.log('train_f1', f1_score(preds, Y, task=self.task, num_classes=self.num_classes), on_step=True, on_epoch=True, prog_bar=True, logger=True)
             return loss
         
         def validation_step(self, batch, batch_idx):
-            X, Y, _, subjects = batch
-            Z = self.encoder(self.normalize_data(X))
-            predictions = torch.argmax(Z, 1) 
+            X, Y = batch[0], batch[1]
+            Z = self.encoder(X).squeeze()
+            Y = Y.to(torch.long)
+
             loss = nn.functional.cross_entropy(Z, Y)
+            _, preds = Z.max(1)
             self.log("val_Classifier/loss", loss, on_epoch=True, prog_bar=True, logger=True)
-            self.log('val_Classifier/accuracy', binary_accuracy(predictions, Y), on_epoch=True, prog_bar=True, logger=True)
-            self.log('val_Classifier/f1', f1_score(predictions, Y, task='binary'), on_epoch=True, prog_bar=True, logger=True)
+            self.log('val_Classifier/accuracy', accuracy(preds, Y, task=self.task, num_classes=self.num_classes), on_epoch=True, prog_bar=True, logger=True)
+            self.log('val_Classifier/f1', f1_score(preds, Y, task=self.task, num_classes=self.num_classes), on_epoch=True, prog_bar=True, logger=True)
 
         def on_validation_epoch_end(self):
             pass
