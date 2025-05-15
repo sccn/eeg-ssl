@@ -10,6 +10,8 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from torch import optim
+
+from libs.TFC_pretraining.code.TFC.augmentations import DataTransform_FD, DataTransform_TD
 from .ssl_utils import LitSSL, instantiate_module
 from .ssl_model import BENDRContextualizer, ConvEncoderBENDR, BENDRLSTM
 from .evaluation import RankMe, Regressor, get_subjects_labels, get_subject_predictions
@@ -252,11 +254,30 @@ class SSLTask():
     def __init__(self):
         pass
     
-    def dataset(self, datasets: torch.utils.data.Dataset):
-        return datasets
+    class SubjectDataset(BaseConcatDataset):
+        def __init__(self, list_ds: List[BaseConcatDataset]):
+            super().__init__(list_ds)
+
+        def __getitem__(self, index):
+            data = super().__getitem__(index)
+            x, y, idx = data
+            assert len(y) == 2, f"y should be a pd.Series or list with 2 elements, but got {len(y)}"
+            if isinstance(y, list): # when mapping
+                label = y[0]
+                subject = y[1]
+            else:
+                # y is a pd Series. Get the value of the field that is not 'subject'
+                assert 'subject' in y
+                label = y.drop('subject').values[0]
+                subject = y['subject']
+        
+            return x, label, idx, subject
+
+    def dataset(self, datasets: List[BaseConcatDataset]):
+        return SSLTask.SubjectDataset(datasets)
     
     def sampler(self, dataset: BaseConcatDataset):
-        return torch.utils.data.sampler.Sampler(dataset)
+        return None
     
     def loss(self):
         pass
@@ -347,7 +368,6 @@ class RelativePositioning(SSLTask):
             # score = self.evaluator.compute()
             # self.log(f'val_RankMe', score, prog_bar=True, logger=True, sync_dist=True)
         
-    
 
 class SimCLR(SSLTask):
     def __init__(self, tau_pos_s):
@@ -487,12 +507,6 @@ class CPC(SSLTask):
     def __init__(self):
         super().__init__()
         # set all arguments except datasets as attributes
-
-    def dataset(self, datasets: List[BaseConcatDataset]):
-        return BaseConcatDataset(datasets)
-    
-    def sampler(self, dataset: BaseConcatDataset):
-        return None
 
     class CPCLit(LitSSL):
         # Repurpose from https://github.com/SPOClab-ca/BENDR/blob/ac918abaec111d15fcaa2a8fcd2bd3d8b0d81a10/dn3_ext.py#L232
@@ -722,7 +736,6 @@ class CPC(SSLTask):
                 c_last = c[:, :, -1]
                 evaluator((c_last, Y, subjects))
 
-            
 class VICReg(SSLTask):
     def __init__(self, 
                  tau_pos_s,  # window length from which to sample different views (segments) of the same recording
@@ -901,6 +914,38 @@ class VICReg(SSLTask):
 
         return sampler
     
+class TFC(SSLTask):
+    from .TFC_pretraining.code.config_files.SleepEEG_Configs import Config as Configs
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    class TFCDataset(SSLTask.SubjectDataset):
+        # Initialize your data, download, etc.
+        def __init__(self, list_ds: List[BaseConcatDataset], config, training_mode):
+            super().__init__(list_ds)
+            self.training_mode = training_mode
+            self.config = config
+
+        def __getitem__(self, index):
+            data = super().__getitem__(index)
+            x_data = data[0]
+            y_data = data[1]
+            x_data_f = torch.fft.fft(torch.from_numpy(x_data)).abs()
+            if self.training_mode == "pre_train":
+                aug1 = DataTransform_TD(x_data, self.config)
+                aug1_f = DataTransform_FD(x_data_f, self.config)
+
+                return x_data, y_data, aug1,  \
+                    x_data_f, aug1_f
+            else:
+                return x_data, y_data, x_data, \
+                    x_data_f, x_data_f
+
+    def dataset(self, list_ds: List[BaseConcatDataset]):
+        tfc_allds = TFC.TFCDataset(list_ds, config=self.config, training_mode='pre_train')
+        return tfc_allds
+
 class Regression(SSLTask):
     """
     Simple Regression task to validate the pipeline
@@ -1000,14 +1045,7 @@ class Regression(SSLTask):
             # log metrics
             for k, v in scores.items():
                 self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
-
         
-    def dataset(self, datasets: List[BaseConcatDataset]):
-        return BaseConcatDataset(datasets)
-    
-    def sampler(self, dataset: BaseConcatDataset):
-        return None
-
 class Classification(SSLTask):
     """
     Simple Regression task to validate the pipeline
@@ -1015,11 +1053,6 @@ class Classification(SSLTask):
     def __init__(self):
         super().__init__()
             
-    def sampler(self, dataset: BaseConcatDataset):
-        return None
-    def dataset(self, datasets: List[BaseConcatDataset]):
-        return BaseConcatDataset(datasets)
-
     class ClassificationLit(LitSSL):
         def __init__(self, task='binary', num_classes=2, *args, **kwargs):
             super().__init__(*args, **kwargs)
