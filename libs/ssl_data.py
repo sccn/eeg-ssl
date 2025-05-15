@@ -181,23 +181,6 @@ class SSLHBNDataModule(L.LightningDataModule):
             train_ds = self.get_and_filter_dataset('train')
             valid_ds = self.get_and_filter_dataset('valid')
 
-            # if self.target_label == 'sex':
-            #     # Get balanced indices for male and female subjects and create a balanced dataset
-            #     male_subjects   = train_ds.description['subject'][train_ds.description['sex'] == 'M']
-            #     female_subjects = train_ds.description['subject'][train_ds.description['sex'] == 'F']
-            #     n_samples = min(len(male_subjects), len(female_subjects))
-            #     train_subj = np.concatenate([male_subjects[:n_samples], female_subjects[:n_samples]])
-            #     train_gender = ['M'] * n_samples + ['F'] * n_samples
-            #     # train_subj, val_subj, train_gender, val_gender = train_test_split(balanced_subjects, balanced_gender, train_size=1, stratify=balanced_gender)
-
-            #     # Create datasets
-            #     train_ds = BaseConcatDataset([ds for ds in train_ds.datasets if ds.description.subject in train_subj])
-
-            #     # Check the balance of the dataset
-            #     assert len(train_subj) == len(train_gender)
-            #     print(f"Number of subjects in balanced dataset: {len(train_subj)}")
-            #     print(f"Gender distribution in balanced dataset: {np.unique(train_gender, return_counts=True)}")
-
             assert set(train_ds.description['subject']).intersection(set(valid_ds.description['subject'])) == set(), "Train and valid datasets should not overlap"
 
             self.train_ds = train_ds
@@ -206,6 +189,59 @@ class SSLHBNDataModule(L.LightningDataModule):
             self.valid_ds = self.get_and_filter_dataset('valid')
         elif stage == 'test':
             self.test_ds = self.get_and_filter_dataset('test')
+
+        if self.target_label == 'sex':
+            # if self has train_ds
+            if hasattr(self, 'train_ds'):
+                # Get balanced indices for male and female subjects and create a balanced dataset
+                male_subjects   = self.train_ds.description['subject'][self.train_ds.description['sex'] == 'M']
+                female_subjects = self.train_ds.description['subject'][self.train_ds.description['sex'] == 'F']
+                n_samples = min(len(male_subjects), len(female_subjects))
+                train_subj = np.concatenate([male_subjects[:n_samples], female_subjects[:n_samples]])
+                train_gender = ['M'] * n_samples + ['F'] * n_samples
+                # train_subj, val_subj, train_gender, val_gender = train_test_split(balanced_subjects, balanced_gender, train_size=1, stratify=balanced_gender)
+
+                # Create datasets
+                self.train_ds = BaseConcatDataset([ds for ds in self.train_ds.datasets if ds.description.subject in train_subj])
+
+                # Check the balance of the dataset
+                assert len(train_subj) == len(train_gender)
+                print(f"Number of subjects in balanced dataset: {len(train_subj)}")
+                print(f"Gender distribution in balanced dataset: {np.unique(train_gender, return_counts=True)}")
+
+            if hasattr(self, 'valid_ds'):
+                # Get balanced indices for male and female subjects and create a balanced dataset
+                male_subjects   = self.valid_ds.description['subject'][self.valid_ds.description['sex'] == 'M']
+                female_subjects = self.valid_ds.description['subject'][self.valid_ds.description['sex'] == 'F']
+                n_samples = min(len(male_subjects), len(female_subjects))
+                val_subj = np.concatenate([male_subjects[:n_samples], female_subjects[:n_samples]])
+                val_gender = ['M'] * n_samples + ['F'] * n_samples
+                # train_subj, val_subj, train_gender, val_gender = train_test_split(balanced_subjects, balanced_gender, train_size=1, stratify=balanced_gender)
+
+                # Create datasets
+                self.valid_ds = BaseConcatDataset([ds for ds in self.valid_ds.datasets if ds.description.subject in val_subj])
+
+                # Check the balance of the dataset
+                assert len(val_subj) == len(val_gender)
+                print(f"Number of subjects in balanced dataset: {len(val_subj)}")
+                print(f"Gender distribution in balanced dataset: {np.unique(val_gender, return_counts=True)}")
+
+            if hasattr(self, 'test_ds'):
+                # Get balanced indices for male and female subjects and create a balanced dataset
+                male_subjects   = self.test_ds.description['subject'][self.test_ds.description['sex'] == 'M']
+                female_subjects = self.test_ds.description['subject'][self.test_ds.description['sex'] == 'F']
+                n_samples = min(len(male_subjects), len(female_subjects))
+                test_subj = np.concatenate([male_subjects[:n_samples], female_subjects[:n_samples]])
+                test_gender = ['M'] * n_samples + ['F'] * n_samples
+
+                # Create datasets
+                self.test_ds = BaseConcatDataset([ds for ds in self.test_ds.datasets if ds.description.subject in test_subj])
+
+                # Check the balance of the dataset
+                assert len(test_subj) == len(test_gender)
+                print(f"Number of subjects in balanced dataset: {len(test_subj)}")
+                print(f"Gender distribution in balanced dataset: {np.unique(test_gender, return_counts=True)}")
+
 
     def train_dataloader(self):
         train_sampler = self.ssl_task.sampler(self.train_ds)

@@ -113,13 +113,13 @@ class Regressor(Metric):
             scores['subject_std_median'] = torch.median(subject_predictions_std)
             scores['subject_std_std'] = torch.std(subject_predictions_std)
             scores['subject_std_iqr'] = torch.quantile(subject_predictions_std, 0.75) - torch.quantile(subject_predictions_std, 0.25)
-        
+
         self.reset()
 
         return scores
 
 def encode_subjects(subjects, device):
-    return torch.tensor([[ord(ch) for ch in subj] for subj in subjects], device=device)
+    return torch.stack([torch.tensor([ord(ch) for ch in subj], device=device) for subj in subjects])
 
 def decode_subjects(subjects):
     return [''.join((chr(int(subjects[s,n].item())) for n in range(subjects.shape[1]))) for s in range(subjects.shape[0])]
@@ -157,7 +157,10 @@ def get_subject_predictions(subjects, sample_predictions):
     return subject_predictions
 
 
-def train_projection_layer_for_eval(model: nn.Module, train_dataloader: torch.utils.data.DataLoader, val_dataloader: torch.utils.data.DataLoader,
+def train_projection_layer_for_eval(model: nn.Module, 
+                                    train_dataloader: torch.utils.data.DataLoader, 
+                                    val_dataloader: torch.utils.data.DataLoader,
+                                    regressor: None,
                                     encoder_emb_size=512, n_outputs=1, loss_fn=torch.nn.functional.mse_loss):
     from tqdm import tqdm
 
@@ -168,42 +171,60 @@ def train_projection_layer_for_eval(model: nn.Module, train_dataloader: torch.ut
     model.to(device)
     model.eval()
 
-    projection_layer = nn.Sequential(
-        nn.Linear(encoder_emb_size, 100),
-        nn.ReLU(),
-        nn.Linear(100, n_outputs)
-    )
+    projection_layer = regressor
+    print('Using regression model:', projection_layer)
+    embeddings = []
+    labels = []
+    for batch in tqdm(train_dataloader):
+        x, y = batch[0], batch[1]
+        x = x.to(device)
+        y = y.to(device)
 
-    # train projection layer
-    projection_layer.to(device)
-    projection_layer.train()
-    optimizer = torch.optim.Adam(projection_layer.parameters(), lr=1e-3)
-    print('Training projection layer...')
-    for e in range(10):
-        epoch_loss = 0
-        for batch in tqdm(train_dataloader):
-            optimizer.zero_grad()
-
-            x, y = batch[0], batch[1]
-            x, y = x.to(device), y.to(device)
-            x, y = x.float(), y.float()
-
+        with torch.no_grad():
             z = model.embed(x)
+            embeddings.append(z.cpu().numpy())
+            labels.append(y.cpu().numpy())
+    embeddings = np.concatenate(embeddings, axis=0)
+    labels = np.concatenate(labels, axis=0)
+    projection_layer.fit(embeddings, labels)
+    print('Train score', projection_layer.score(embeddings, labels))
 
-            preds = projection_layer(z).squeeze()
+    # projection_layer = nn.Sequential(
+    #     nn.Linear(encoder_emb_size, 100),
+    #     nn.ReLU(),
+    #     nn.Linear(100, n_outputs)
+    # )
+
+    # # train projection layer
+    # projection_layer.to(device)
+    # projection_layer.train()
+    # optimizer = torch.optim.Adam(projection_layer.parameters(), lr=1e-3)
+    # print('Training projection layer...')
+    # for e in range(10):
+    #     epoch_loss = 0
+    #     for batch in tqdm(train_dataloader):
+    #         optimizer.zero_grad()
+
+    #         x, y = batch[0], batch[1]
+    #         x, y = x.to(device), y.to(device)
+    #         x, y = x.float(), y.float()
+
+    #         z = model.embed(x)
+
+    #         preds = projection_layer(z).squeeze()
             
-            loss = loss_fn(preds, y)
-            epoch_loss += loss.item()
+    #         loss = loss_fn(preds, y)
+    #         epoch_loss += loss.item()
 
-            loss.backward()
-            optimizer.step()
+    #         loss.backward()
+    #         optimizer.step()
 
-        epoch_loss /= len(train_dataloader)
-        print(f'Epoch {e} - Loss: {epoch_loss:.4f}')
+    #     epoch_loss /= len(train_dataloader)
+    #     print(f'Epoch {e} - Loss: {epoch_loss:.4f}')
 
     # evaluate on validation set
-    print('Evaluating on validation set...')
-    projection_layer.eval()
+    # print('Evaluating on validation set...')
+    # projection_layer.eval()
     preds = []
     labels = []
     for batch in tqdm(val_dataloader):
@@ -212,15 +233,16 @@ def train_projection_layer_for_eval(model: nn.Module, train_dataloader: torch.ut
 
         with torch.no_grad():
             z = model.embed(x)
-            preds.append(projection_layer(z))
+            # preds.append(projection_layer(z))
+            preds.append(torch.from_numpy(projection_layer.predict(z.cpu().numpy())))
             labels.append(y)
-    preds = torch.cat(preds, dim=0).squeeze()
-    labels = torch.cat(labels, dim=0).squeeze()
+    preds = torch.cat(preds, dim=0).squeeze().cpu()
+    labels = torch.cat(labels, dim=0).squeeze().cpu()
     metrics = ['R2',    'concordance',      'mse',                'mae']
     fcns = [r2_score, concordance_corrcoef, mean_squared_error, mean_absolute_error]
     score = {}
     for metric, fcn in zip(metrics, fcns):
-        score[metric] = fcn(torch.tensor(preds), labels).item()
+        score[metric] = fcn(preds, labels).item()
 
     # print dictionary key value pair one per line
     print('Validation scores:')

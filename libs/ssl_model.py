@@ -698,4 +698,3 @@ class BENDRLSTM(nn.Module):
 
         return x.permute(0, 2, 1)
         
-

@@ -17,7 +17,7 @@ trainer:
       id: null
       anonymous: null
       project: hbn-regression
-      log_model: true
+      log_model: all
       experiment: null
       prefix: ''
       checkpoint_name: null
@@ -44,12 +44,12 @@ trainer:
   callbacks:
     class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
-      # monitor: val_Regressor/mae
-      # mode: min
+      monitor: val_Regressor/mae
+      mode: min
       save_last: true
       # save_top_k: 10
       save_on_train_epoch_end: true
-      every_n_epochs: 10
+      # every_n_epochs: 10
       save_weights_only: false
       auto_insert_metric_name: true
       filename: "{epoch:03d}-{val_Regressor_mae:.3f}"
@@ -88,22 +88,26 @@ trainer:
 model:
   class_path: libs.ssl_task.Regression.RegressionLit
   init_args:
-    # encoder_path: braindecode.models.Deep4Net
-    encoder_path: libs.bendr.BENDR
+    encoder_path: braindecode.models.Deep4Net
+    # encoder_path: libs.bendr.BENDR
     encoder_kwargs:
       n_outputs: 1
       n_chans: 128
-      n_times: 5000
-      activation: torch.nn.GELU
-      # activation_first_conv_nonlin: torch.nn.ELU
-      # activation_later_conv_nonlin: torch.nn.ELU
-    learning_rate: 0.00005
-    loss_fcn: torch.nn.functional.l1_loss
+      n_times: 500
+      # n_times: 5000
+      # activation: torch.nn.GELU
+      activation_first_conv_nonlin: torch.nn.ELU
+      activation_later_conv_nonlin: torch.nn.ELU
+    # learning_rate: 0.00005
+    learning_rate: 0.0005
+    # loss_fcn: torch.nn.functional.l1_loss
+    loss_fcn: torch.nn.functional.mse_loss
     seed: 3
 data:
   ssl_task:
       class_path: libs.ssl_task.Regression
-  window_len_s: 20
+  # window_len_s: 20
+  window_len_s: 2
   batch_size: 64
   num_workers: 30
   data_dir: /mnt/nemar/openneuro
@@ -118,7 +122,8 @@ data:
   - ds005514
   - ds005515
   - ds005516
-  target_label: p_factor
+  target_label: age
+  # target_label: p_factor
   overwrite_preprocessed: false
   val_release: ds005505
   test_release: ds005510

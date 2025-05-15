@@ -20,19 +20,21 @@ import random
 import string
 
 if __name__ == '__main__':
-    for seed in set(range(20)) - set([3,4]):
+    # for seed in set(range(20)) - set([3,4]):
+    for seed in [3]:
         print(f'seed: {seed}')
         # run system command with python subprocess
         # os.system(f'python main.py --seed {seed} --config runs/config_CPC.yaml')
         # generate a random 8 letter id string
+        task = 'Classification'
         wandb_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
         print(f'wandb_id: {wandb_id}')
-        subprocess.run(['python3', 'main.py', 'validate', '--config', 'runs/config_CPC.yaml', 
+        subprocess.run(['python3', 'main.py', 'validate', '--config', f'runs/config_{task}.yaml', 
                         '--seed_everything', str(seed), 
                         '--model.seed', str(seed),
                         '--trainer.logger.init_args.id', wandb_id,])
 
-        subprocess.run(['python3', 'main.py', 'fit', '--config', 'runs/config_CPC.yaml', 
+        subprocess.run(['python3', 'main.py', 'fit', '--config', f'runs/config_{task}.yaml', 
                         '--seed_everything', str(seed), 
                         '--model.seed', str(seed),
                         '--trainer.logger.init_args.id', wandb_id,])
