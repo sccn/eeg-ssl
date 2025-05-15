@@ -14,7 +14,9 @@ class LitSSL(L.LightningModule):
         emb_size=100, 
         encoder_emb_size=100,
         learning_rate=0.005,
-        seed=0
+        seed=0,
+        optimizer_path = None,
+        optimizer_kwargs = None,
     ):
         super().__init__()
         self.encoder = instantiate_module(encoder_path, encoder_kwargs)
@@ -27,17 +29,17 @@ class LitSSL(L.LightningModule):
         self.evaluators = [globals()[evaluator]() for evaluator in evaluators]
 
         self.save_hyperparameters()
-        
+
     def embed(self, x):
         pass
 
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
     
-    def on_validation_start(self):
-        for evaluator in self.evaluators:
-            assert len(evaluator.labels) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
-            assert len(evaluator.x) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
+    # def on_validation_start(self):
+    #     for evaluator in self.evaluators:
+    #         assert len(evaluator.labels) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
+    #         assert len(evaluator.x) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
     
     def validation_step(self, batch, batch_idx):
         X, Y, _, subjects = batch
@@ -91,12 +93,16 @@ class LitSSL(L.LightningModule):
         self.log_dict(norms)
         
     def configure_optimizers(self):
-        print('learning rate', self.learning_rate)
-        optimizer = optim.Adamax(self.parameters(), lr=self.learning_rate)
+        if self.hparams.optimizer_path:
+            optimizer = instantiate_module(self.hparams.optimizer_path, self.hparams.optimizer_kwargs, args=[self.parameters()])
+        else:
+            print('learning rate', self.learning_rate)
+            optimizer = optim.Adamax(self.parameters(), lr=self.learning_rate)
+        print('optimizer', optimizer)
         return optimizer
     
 ############### Helper functions ###############
-def instantiate_module(module_class_str, kwargs):
+def instantiate_module(module_class_str, kwargs, args=None):
     """
     Instantiates a class from a module and class name string,
     passing constructor arguments as a dictionary.
@@ -114,7 +120,7 @@ def instantiate_module(module_class_str, kwargs):
         module_name, class_name = module_class_str.rsplit('.', 1)
         module = importlib.import_module(module_name)
         cls = getattr(module, class_name)
-        assert issubclass(cls, torch.nn.Module), f"{cls} is not a subclass of torch Module"
+        # assert issubclass(cls, torch.nn.Module), f"{cls} is not a subclass of torch Module"
 
         # Check for classpaths in kwargs
         for key, value in kwargs.items():
@@ -122,7 +128,10 @@ def instantiate_module(module_class_str, kwargs):
               classpath = get_class_from_string(value)
               kwargs[key] = classpath
 
-        instance = cls(**kwargs)
+        if args is not None:
+            instance = cls(*args, **kwargs)
+        else:
+            instance = cls(**kwargs)
         return instance
     except (ImportError, AttributeError, ValueError) as e:
         print(f"Error instantiating class: {e}")
