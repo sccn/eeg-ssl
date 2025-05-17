@@ -17,3 +17,4 @@ notebooks/eeg-ssl-voyager/
 data/
 .env
 server/*.json
+libs/TFC_pretraining/

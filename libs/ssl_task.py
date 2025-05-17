@@ -1033,6 +1033,8 @@ class Classification(SSLTask):
 
         def training_step(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
+            if self.hparams.channel_wise_norm:
+                X = self.normalize_data(X)
             Z = self.encoder(X).squeeze()
             Y = Y.to(torch.long)
 
@@ -1045,6 +1047,8 @@ class Classification(SSLTask):
         
         def validation_step(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
+            if self.hparams.channel_wise_norm:
+                X = self.normalize_data(X)
             Z = self.encoder(X).squeeze()
             Y = Y.to(torch.long)
 

@@ -17,6 +17,7 @@ class LitSSL(L.LightningModule):
         seed=0,
         optimizer_path = None,
         optimizer_kwargs = None,
+        channel_wise_norm=False,
     ):
         super().__init__()
         self.encoder = instantiate_module(encoder_path, encoder_kwargs)
@@ -33,13 +34,16 @@ class LitSSL(L.LightningModule):
     def embed(self, x):
         pass
 
+    
+    def normalize_data(self, x):
+        '''Channel wise standard normalization'''
+        mean = x.mean(dim=-1, keepdim=True)
+        std = x.std(dim=-1, keepdim=True) + 1e-7  # add small epsilon for numerical stability
+        x = (x - mean) / std
+        return x
+
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()
-    
-    # def on_validation_start(self):
-    #     for evaluator in self.evaluators:
-    #         assert len(evaluator.labels) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
-    #         assert len(evaluator.x) == 0, f"Evaluator {type(evaluator).__name__} should be empty at the start of validation"
     
     def validation_step(self, batch, batch_idx):
         X, Y, _, subjects = batch

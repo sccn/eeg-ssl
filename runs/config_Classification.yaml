@@ -17,7 +17,7 @@ trainer:
       id: null
       anonymous: null
       project: hbn-regression
-      log_model: all
+      log_model: true
       experiment: null
       prefix: ''
       checkpoint_name: null
@@ -54,7 +54,7 @@ trainer:
   #     auto_insert_metric_name: true
   #     filename: "{epoch:03d}-{val_Classifier:.3f}"
   fast_dev_run: false
-  max_epochs: 21
+  max_epochs: 6
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -88,17 +88,18 @@ trainer:
 model:
   class_path: libs.ssl_task.Classification.ClassificationLit
   init_args:
-    # encoder_path: braindecode.models.Deep4Net
-    encoder_path: braindecode.models.EEGNetv4
+    encoder_path: braindecode.models.Deep4Net
+    # encoder_path: braindecode.models.EEGNetv4
     encoder_kwargs:
       n_outputs: 2
       n_chans: 128
       n_times: 500
-      activation: torch.nn.ELU
-      # activation_first_conv_nonlin: torch.nn.ELU
-      # activation_later_conv_nonlin: torch.nn.ELU
+      # activation: torch.nn.ELU
+      activation_first_conv_nonlin: torch.nn.ELU
+      activation_later_conv_nonlin: torch.nn.ELU
     learning_rate: 0.002
     seed: 3
+    channel_wise_norm: false
 data:
   ssl_task:
       class_path: libs.ssl_task.Classification
