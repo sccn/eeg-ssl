@@ -930,6 +930,8 @@ class Regression(SSLTask):
             # training_step defines the train loop.
             # it is independent of forward
             X, Y = batch[0], batch[1]
+            if self.hparams.channel_wise_norm:
+                X = self.normalize_data(X)
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X)) 
 
@@ -949,6 +951,8 @@ class Regression(SSLTask):
 
         def validation_step(self, batch, batch_idx):
             X, Y, subjects = batch[0], batch[1], batch[3]
+            if self.hparams.channel_wise_norm:
+                X = self.normalize_data(X)
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X))
             assert len(Z.shape) == len(Y.shape) == 1, f"Z {Z.shape} and Y {Y.shape} should be 1D tensors"

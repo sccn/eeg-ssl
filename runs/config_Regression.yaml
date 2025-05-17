@@ -99,7 +99,7 @@ model:
       activation_first_conv_nonlin: torch.nn.ELU
       activation_later_conv_nonlin: torch.nn.ELU
     # learning_rate: 0.00005
-    learning_rate: 0.0005
+    learning_rate: 0.002
     # loss_fcn: torch.nn.functional.l1_loss
     loss_fcn: torch.nn.functional.mse_loss
     seed: 3
