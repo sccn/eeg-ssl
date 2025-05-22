@@ -26,15 +26,29 @@ if __name__ == '__main__':
         # run system command with python subprocess
         # os.system(f'python main.py --seed {seed} --config runs/config_CPC.yaml')
         # generate a random 8 letter id string
-        task = 'Classification'
         wandb_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
         print(f'wandb_id: {wandb_id}')
-        subprocess.run(['python3', 'main.py', 'validate', '--config', f'runs/config_{task}.yaml', 
-                        '--seed_everything', str(seed), 
-                        '--model.seed', str(seed),
-                        '--trainer.logger.init_args.id', wandb_id,])
 
-        subprocess.run(['python3', 'main.py', 'fit', '--config', f'runs/config_{task}.yaml', 
+        task = 'Regression'
+        target_label = 'attention'
+        debug_mode = True
+
+        '''!!!!!REMBER TO SPECIFY NAME FOR OFFICIAL RUNS!!!!!'''
+        experiment_name = f'attention'
+
+        command_args = ['--config', f'runs/config_{task}.yaml', 
                         '--seed_everything', str(seed), 
                         '--model.seed', str(seed),
-                        '--trainer.logger.init_args.id', wandb_id,])
+                        '--data.target_label', target_label]
+        if debug_mode:
+            command_args.extend(['--trainer.logger', 'null',
+                                #  '--trainer.fast_dev_run', 'true',
+                                 '--trainer.max_epochs', str(10)])
+        else:
+            command_args.extend(['--trainer.logger.init_args.name', experiment_name,
+                                 '--trainer.logger.init_args.id', wandb_id])
+
+        command = ['python3', 'main.py']
+        print('Run command: ', command + ['validate'] + command_args)
+        subprocess.run(command + ['validate'] + command_args)
+        subprocess.run(command + ['fit'] + command_args)

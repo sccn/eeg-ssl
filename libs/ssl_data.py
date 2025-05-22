@@ -148,6 +148,8 @@ class SSLHBNDataModule(L.LightningDataModule):
             raise ValueError(f"Target label {self.target_label} not found in dataset description")
         for ds in all_ds.datasets:
             # filter nan target label
+            if self.target_label not in ds.description:
+                raise ValueError(f"Target label {self.target_label} not found in dataset description for dataset\n {ds.description}")
             if not (pd.isna(ds.description[self.target_label]) or ds.description['subject'] in self.bad_subjects):
                 if len(ds.raw.ch_names) < 128:
                     raise ValueError(f"Dataset {ds.description['subject']} has less than 128 channels")
