@@ -2,13 +2,8 @@
 Apply Self-supervised Learning on NEMAR and EEGDASH data
 
 ## Installation
-- Install our fork of mne-python for latest EEGLAB import behavior: `pip install git+https://github.com/dungscout96/mne-python.git`
 - Install PyTorch for your respective system: https://pytorch.org/get-started/locally/
-- Install braindecode: `pip install braindecode`
-
-To run model training, also install:
-- Install tensorboard: `pip install tensorboard`
-- Install torch lightning: `pip install lightning`
+- Install from your requirements.tsv file
 
 ## Run test model
 
@@ -17,7 +12,9 @@ https://drive.google.com/file/d/1KWEDoZOqyLojq0hQx8lUNTWSdZ5tBlTc/view?usp=shari
 
 Place the zip file in ./notebooks/data
 
-Run the notebook ./notebooks/HBN_braindecode.ipynb
+Edit the main_script.py to the config file you want to run (Classification the most simple)
+
+Run the main_script.py
 
 ## Original video from Gramfort
 

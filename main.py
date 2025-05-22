@@ -5,6 +5,8 @@ import torch
 
 def main():
     torch.set_float32_matmul_precision("high")
+    
+    # starts logging after the first epoch
     cli = LightningCLI(LitSSL, SSLHBNDataModule, save_config_callback=None, subclass_mode_model=True)
 
 if __name__ == '__main__':
