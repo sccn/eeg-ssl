@@ -4,6 +4,19 @@ Apply Self-supervised Learning on NEMAR and EEGDASH data
 ## Installation
 - Install PyTorch for your respective system: https://pytorch.org/get-started/locally/
 - Install from your requirements.tsv file
+- If problems try pip uninstall braindecode; pip install git+https://github.com/braindecode/braindecode
+
+## Configure weights and biases
+
+### Online config
+- log in with Google
+- Under your name (top right) select the SCCN team
+- Then select eeg-ssl project
+
+### Local config
+
+- Ask for a key the first time. Select your name (top right) select the API key (copy)
+- To reset the local key (it is a global env variable)
 
 ## Run test model
 

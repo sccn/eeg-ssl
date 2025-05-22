@@ -92,7 +92,7 @@ model:
     # encoder_path: braindecode.models.EEGNetv4
     encoder_kwargs:
       n_outputs: 2
-      n_chans: 128
+      n_chans: 129
       n_times: 500
       # activation: torch.nn.ELU
       activation_first_conv_nonlin: torch.nn.ELU
@@ -107,7 +107,7 @@ data:
   batch_size: 64
   num_workers: 30
   data_dir: /mnt/nemar/openneuro
-  cache_dir: data-no_cz-robust_scaled
+  cache_dir: data
   datasets:
   - ds005506
   - ds005507
