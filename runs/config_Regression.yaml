@@ -17,7 +17,7 @@ trainer:
       id: null
       anonymous: null
       project: hbn-regression
-      log_model: all
+      log_model: true
       experiment: null
       prefix: ''
       checkpoint_name: null
@@ -41,18 +41,18 @@ trainer:
       sync_tensorboard: null
       monitor_gym: null
       settings: null
-  callbacks:
-    class_path: lightning.pytorch.callbacks.ModelCheckpoint
-    init_args:
-      monitor: val_Regressor/mae
-      mode: min
-      save_last: true
-      # save_top_k: 10
-      save_on_train_epoch_end: true
-      # every_n_epochs: 10
-      save_weights_only: false
-      auto_insert_metric_name: true
-      filename: "{epoch:03d}-{val_Regressor_mae:.3f}"
+  callbacks: null
+    # class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    # init_args:
+    #   monitor: val_Regressor/mae
+    #   mode: min
+    #   save_last: true
+    #   # save_top_k: 10
+    #   save_on_train_epoch_end: true
+    #   # every_n_epochs: 10
+    #   save_weights_only: false
+    #   auto_insert_metric_name: true
+    #   filename: "{epoch:03d}-{val_Regressor_mae:.3f}"
   fast_dev_run: false
   max_epochs: 100
   min_epochs: null
@@ -92,7 +92,7 @@ model:
     # encoder_path: libs.bendr.BENDR
     encoder_kwargs:
       n_outputs: 1
-      n_chans: 128
+      n_chans: 129 #128
       n_times: 500
       # n_times: 5000
       # activation: torch.nn.GELU
@@ -102,6 +102,7 @@ model:
     learning_rate: 0.002
     # loss_fcn: torch.nn.functional.l1_loss
     loss_fcn: torch.nn.functional.mse_loss
+    channel_wise_norm: true
     seed: 3
 data:
   ssl_task:
@@ -111,7 +112,7 @@ data:
   batch_size: 64
   num_workers: 30
   data_dir: /mnt/nemar/openneuro
-  cache_dir: data-no_cz-robust_scaled
+  cache_dir: data # data-no_cz-robust_scaled
   datasets:
   - ds005506
   - ds005507
@@ -122,8 +123,8 @@ data:
   - ds005514
   - ds005515
   - ds005516
-  target_label: age
-  # target_label: p_factor
+  # target_label: age
+  target_label: p_factor
   overwrite_preprocessed: false
   val_release: ds005505
   test_release: ds005510

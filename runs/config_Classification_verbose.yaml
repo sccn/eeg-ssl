@@ -1,0 +1,158 @@
+# PyTorch Lightning version
+# lightning.pytorch==2.5.0
+
+# Set random seed for reproducibility
+seed_everything: 3
+
+trainer:
+  # Automatically selects the appropriate accelerator (GPU/CPU/TPU)
+  accelerator: auto
+  # Automatically chooses strategy (DDP, DP, etc.) - multiple GPUs etc.
+  strategy: auto
+  # If your acceletor is GPU, how many GPU to use
+  devices: 1
+  # If your acceletor is GPU, how many nodes to use
+  num_nodes: 1
+  # Use default precision (float32=null=default)
+  precision: null
+
+  # Logger configuration using Weights & Biases - this is specific to Weights & Biases
+  # Do not change, because parameters interact with each other
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger # Wandb is Weights & Biases
+    init_args:
+      name: null  # Auto-generated run name (also set in the main script, for example sex classification)
+      save_dir: .  
+      version: null
+      offline: false 
+      dir: null 
+      id: null # Auto-generated ID name (also set in the main script)
+      anonymous: null
+      project: hbn-regression  # Project name in W&B
+      log_model: true  # Log model checkpoints - set to all to save all checkpoint (does not save the checkpoint if false; you can download it and resume)
+      experiment: null
+      prefix: ''
+      checkpoint_name: null
+      entity: null
+      notes: null
+      tags: null
+      config: null
+      config_exclude_keys: null
+      config_include_keys: null
+      allow_val_change: true
+      group: null
+      job_type: "training"
+      mode: online
+      force: null
+      reinit: null
+      resume: "allow"  # Allow auto resume
+      resume_from: null
+      fork_from: null
+      save_code: true  # Save the code with the run
+      tensorboard: null
+      sync_tensorboard: null
+      monitor_gym: null
+      settings: null
+
+  # Optional: Callback for model checkpointing - when save all or true
+  # callbacks:
+  #   class_path: lightning.pytorch.callbacks.ModelCheckpoint
+  #   init_args:
+  #     monitor: val_Classifier/f1  # Metric to monitor
+  #     mode: min  # Lower is better
+  #     save_top_k: 5  # Save top 5 models
+  #     save_on_train_epoch_end: true
+  #     auto_insert_metric_name: true
+  #     filename: "{epoch:03d}-{val_Classifier:.3f}"
+
+
+  fast_dev_run: false # Debug run mode (run a single batch)
+  max_epochs: 20  # Train for 20 epochs
+  min_epochs: null
+  max_steps: -1  # No max steps limit
+  min_steps: null
+  max_time: null
+
+  # Data loading limits (all batches used)
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0 # if you specify 0.1, will use only the 10% of the training batch (try to overfit to make sure the model works)
+
+  # Validate every epoch
+  val_check_interval: null
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: null
+  log_every_n_steps: 1  # Log every step
+
+  # Checkpointing enabled
+  enable_checkpointing: True
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: .  # Root directory for all outputs
+
+# Model definition using a custom LightningModule
+model:
+  class_path: libs.ssl_task.Classification.ClassificationLit
+  init_args:
+    encoder_path: braindecode.models.Deep4Net  # EEG encoder
+    # encoder_path: libs.ssl_model.VGGSSL  # EEG encoder
+    # encoder_path: braindecode.models.ShallowSomething  # EEG encoder
+    # encoder_path: braindecode.models.EEGNetv4
+    encoder_kwargs:
+      n_outputs: 2  # Binary classification
+      n_chans: 129  # EEG channel count
+      n_times: 500  # Timepoints per window
+      activation_first_conv_nonlin: torch.nn.ELU
+      activation_later_conv_nonlin: torch.nn.ELU
+    learning_rate: 0.002
+    seed: 3 # for logging purpose in W&B
+    channel_wise_norm: false # important, makes a difference, better when on
+
+# Data configuration
+data:
+  ssl_task: # different way of sampling data, not really SSL, more like how to sample the data
+    class_path: libs.ssl_task.Classification
+  window_len_s: 2  # Sliding window length in seconds
+  batch_size: 64
+  num_workers: 30  # High parallel data loading
+  data_dir: /mnt/nemar/openneuro  # Input EEG datasets
+  cache_dir: data
+  datasets:
+    - ds005506
+    - ds005507
+    - ds005508
+    - ds005509
+    - ds005511
+    - ds005512
+    - ds005514
+    - ds005515
+    - ds005516
+  target_label: sex  # Classification target
+  overwrite_preprocessed: false
+  val_release: ds005505  # Validation dataset
+  test_release: ds005510  # Test dataset
+  mapping:  # Label encoding
+    M: 0
+    F: 1
+
+# Optimizer and LR scheduler not specified (use default)
+optimizer: null
+lr_scheduler: null
+
+# No checkpoint path to resume from
+ckpt_path: null

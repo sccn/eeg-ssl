@@ -49,7 +49,7 @@ trainer:
       # save_top_k: 2
       # mode: min
       # save_last: true
-      every_n_epochs: 3
+      every_n_epochs: 10
       save_weights_only: false
       auto_insert_metric_name: true
       filename: "{epoch:03d}-{train_loss:.3f}"
