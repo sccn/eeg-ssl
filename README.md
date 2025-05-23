@@ -56,6 +56,8 @@ Here the path to the dataset is at `/mnt/nemar/child-mind-rest` and we assume th
 
 ## Voyager install
 
+- ssh arno@login.voyager.sdsc.edu
+
 -  Download BIDS data and put it in the data folder. If you are downloading ds005505 for example, make sure the data is in data/ds005505/ (example of command scp -r arno@login.expanse.sdsc.edu:/expanse/projects/nemar/openneuro/ds005505 eeg-ssl/notebooks/data/)
   
 -  Edit the file "runs/config_RP.yaml" and change the list of datasets under "data" to the data that is available to you (for example "ds005505") change also the "data_dir" entry to "data"
@@ -68,14 +70,15 @@ Here the path to the dataset is at `/mnt/nemar/child-mind-rest` and we assume th
 module load kubernetes/voyager/1.21.14
 kubectl apply -f ./voyager.yaml
 kubectl describe pod eeg-ssl-interactive
-kubectl logs pod eeg-ssl-interactive
+kubectl logs eeg-ssl-interactive
 kubectl exec -it eeg-ssl-interactive  -- /bin/bash
 ```
 
 - Once on the Kubernete, run the program
 
 ```
-python main.py fit --config runs/config_RP.yaml
+cd cepth/eeg-ssl
+python main.py fit --config runs/config_Regression.yaml
 ```
 
 - Register on Weights and Biases https://wandb.ai/site/, and get a key at https://wandb.ai/authorize. At some point, the script above (after processing the data) will ask if you have an account, enter yes, and then copy your key. Once the script finishes, look at the results on weights and biases website.
