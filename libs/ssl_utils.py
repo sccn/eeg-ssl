@@ -17,7 +17,7 @@ class LitSSL(L.LightningModule):
         seed=0,
         optimizer_path = None,
         optimizer_kwargs = None,
-        channel_wise_norm=False,
+        window_norm='None',
     ):
         super().__init__()
         self.encoder = instantiate_module(encoder_path, encoder_kwargs)
@@ -34,13 +34,51 @@ class LitSSL(L.LightningModule):
     def embed(self, x):
         pass
 
-    
-    def normalize_data(self, x):
-        '''Channel wise standard normalization'''
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True) + 1e-7  # add small epsilon for numerical stability
-        x = (x - mean) / std
+    def remove_chan(self, x):
+        """
+        Remove Cz channel from the input tensor.
+        Assumes that the Cz channel is last channel
+        """
+        assert x.ndim == 3, f"Input tensor must be 3D, got {x.ndim}D tensor"
+        assert x.shape[1] == 129 or x.shape[1] == 128, f"Input tensor must have 129 or 128 channels, got {x.shape[1]} channels"
+        if x.shape[1] == 129:
+            # check that Cz is empty
+            assert torch.all(x[:, -1, :] == 0), f"Cz channel is not empty, found {x[..., -1].unique()}"
+            # remove Cz channel - last channel
+            x = x[:, :-1, :]
         return x
+    
+    def normalize_data(self, x, method='robust'):
+        if self.hparams.window_norm == 'None':
+            # no normalization
+            return x
+        elif self.hparams.window_norm == 'all':
+            channel_wise_norm = False
+        elif self.hparams.window_norm == 'channel_wise':
+            channel_wise_norm = True
+        if method == 'standard':
+            if channel_wise_norm:
+                # normalize each channel separately
+                center = x.mean(dim=-1, keepdim=True)
+                variance = x.std(dim=-1, keepdim=True) #+ 1e-7  # add small epsilon for numerical stability
+            else:
+                center = x.mean(dim=0, keepdim=True)  
+                variance = x.std(dim=0, keepdim=True) #+ 1e-7  # add small epsilon for numerical stability
+        elif method == 'robust':
+            if channel_wise_norm:
+                # normalize each channel separately
+                center, _ = x.median(dim=-1, keepdim=True)
+                variance = x.quantile(0.75, dim=-1, keepdim=True) - x.quantile(0.25, dim=-1, keepdim=True)
+            else:
+                center, _ = x.median(dim=0, keepdim=True)  
+                variance = x.quantile(0.75, dim=0, keepdim=True) - x.quantile(0.25, dim=0, keepdim=True)
+        # standard scale to 0 mean and 1 std using statistics of the entire recording
+        x = (x - center) / variance # normalize preserving batch dim
+        return x
+        # mean = x.mean(dim=-1, keepdim=True)
+        # std = x.std(dim=-1, keepdim=True) + 1e-7  # add small epsilon for numerical stability
+        # x = (x - mean) / std
+        # return x
 
     def training_step(self, batch, batch_idx):
         raise NotImplementedError()

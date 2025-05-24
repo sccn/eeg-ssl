@@ -526,7 +526,7 @@ class CPC(SSLTask):
             self.num_negatives = num_negatives
             self.negative_same_recording = negative_same_recording
 
-            self.evaluators = [Regressor(projection_head=False)]
+            self.evaluators = [] #[Regressor(projection_head=False)]
         
         def _generate_negatives(self, z):
             """Generate negative samples to compare each sequence location against"""
@@ -648,7 +648,10 @@ class CPC(SSLTask):
                 return z_k, negative_inds
 
         def training_step(self, batch, batch_idx):
-            z = self.encoder(batch[0])
+            X = batch[0]
+            X = self.remove_chan(X)
+            X = self.normalize_data(X)
+            z = self.encoder(X)
             batch_size, feat, samples = z.shape
             # z - (B, F, seq_len)
 
@@ -678,7 +681,10 @@ class CPC(SSLTask):
             return c_last
 
         def validation_step(self, batch, batch_idx):
-            z = self.encoder(batch[0])
+            X = batch[0]
+            X = self.remove_chan(X)
+            X = self.normalize_data(X)
+            z = self.encoder(X)
             batch_size, feat, samples = z.shape
             Y, subjects = batch[1], batch[3]
             # z - (B, F, seq_len)
@@ -930,8 +936,8 @@ class Regression(SSLTask):
             # training_step defines the train loop.
             # it is independent of forward
             X, Y = batch[0], batch[1]
-            if self.hparams.channel_wise_norm:
-                X = self.normalize_data(X)
+            X = self.remove_chan(X)
+            X = self.normalize_data(X)
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X)) 
 
@@ -951,8 +957,9 @@ class Regression(SSLTask):
 
         def validation_step(self, batch, batch_idx):
             X, Y, subjects = batch[0], batch[1], batch[3]
-            if self.hparams.channel_wise_norm:
-                X = self.normalize_data(X)
+            X = self.remove_chan(X)
+            X = self.normalize_data(X)
+            # X = self.normalize_data(X, norm_mode=self.hparams.window_norm)
             Y = Y.to(torch.float32)
             Z = torch.squeeze(self.encoder(X))
             assert len(Z.shape) == len(Y.shape) == 1, f"Z {Z.shape} and Y {Y.shape} should be 1D tensors"
@@ -1037,8 +1044,8 @@ class Classification(SSLTask):
 
         def training_step(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
-            if self.hparams.channel_wise_norm:
-                X = self.normalize_data(X)
+            X = self.remove_chan(X)
+            X = self.normalize_data(X)
             Z = self.encoder(X).squeeze()
             Y = Y.to(torch.long)
 
@@ -1051,8 +1058,8 @@ class Classification(SSLTask):
         
         def validation_step(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
-            if self.hparams.channel_wise_norm:
-                X = self.normalize_data(X)
+            X = self.remove_chan(X)
+            X = self.normalize_data(X)
             Z = self.encoder(X).squeeze()
             Y = Y.to(torch.long)
 
