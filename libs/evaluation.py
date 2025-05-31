@@ -10,6 +10,24 @@ import numpy as np
 from collections import defaultdict
 
 
+def rankme(embeddings):
+        # parse inputs
+        # print('RankMe self.embs', self.embs)
+        embs = embeddings
+        if len(embs.shape) > 2:
+            raise ValueError('Expect 2D embeddings of shape (N, K)')
+        print('RankMe embs shape', embs.shape)
+        if embs.shape[0] < embs.shape[1]:
+            raise ValueError(f'Expect N >= K but received ({embs.shape})')
+        # subselect 25600 embeddings randomly
+        # embs = embs[torch.randperm(embs.shape[0])[:25600]]
+        _, S, _ = torch.linalg.svd(embs)
+        eps = 1e-7
+        p = S/torch.linalg.norm(S, ord=1) + eps
+        rank_z = torch.exp(-torch.sum(p*torch.log(p)))
+
+        return rank_z
+
 class RankMe(Metric):
     '''
     From paper: 

@@ -36,7 +36,7 @@ if __name__ == '__main__':
         debug_mode = False # for debugging for weight and biases (no logging)
 
         '''!!!!!REMBER TO SPECIFY NAME FOR OFFICIAL RUNS!!!!!'''
-        experiment_name = f'test'
+        experiment_name = f'sex-balanced-seed_{seed}-checkpoint'
 
         command_args = ['--config', f'runs/config_{task}.yaml', 
                         '--seed_everything', str(seed), 

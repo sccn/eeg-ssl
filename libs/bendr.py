@@ -128,7 +128,8 @@ class _ConvEncoderBENDR(nn.Module):
         enc_width=(3, 2, 2, 2, 2, 2),
         dropout=0.0,
         projection_head=False,
-        enc_downsample=(3, 2, 2, 2, 2, 2),
+        enc_downsample=(3, 2, 2, 2, 2, 2), # Young: the factor by which the sequence length is downsampled at each layer. 
+                                           # Here total downsampling is 3 * 2 * 2 * 2 * 2 * 2 = 96 (i.e. the sequence length is divided by 96 at the last layer)
     ):
         super().__init__()
         self.encoder_h = encoder_h
@@ -147,6 +148,7 @@ class _ConvEncoderBENDR(nn.Module):
         enc_width = [
             e if e % 2 != 0 else e + 1 for e in enc_width
         ]  # Ensure odd kernel size
+           # Young: for the padding to work I'm guessing
         self._downsampling = enc_downsample
         self._width = enc_width
 
@@ -156,13 +158,14 @@ class _ConvEncoderBENDR(nn.Module):
             self.encoder.add_module(
                 "Encoder_{}".format(i),
                 nn.Sequential(
-                    nn.Conv1d(
+                    nn.Conv1d( # Young: Conv1d convolve in the time dimension
                         current_in_features,
                         encoder_h,
                         width,
                         stride=downsample,
                         padding=width
                         // 2,  # Correct padding for 'same' output length before stride
+                            # Young: this means the downsampling of sequence length is only done by the stride, not by the kernel size
                     ),
                     nn.Dropout1d(dropout),  # 1D dropout for 1D conv
                     nn.GroupNorm(

@@ -9,7 +9,7 @@ import string
 
 if __name__ == '__main__':
     # for seed in set(range(20)) - set([3,4]):
-    for seed in [4]: #range(4):
+    for seed in range(1, 5):
         print(f'seed: {seed}')
         # run system command with python subprocess
         # os.system(f'python main.py --seed {seed} --config runs/config_CPC.yaml')
@@ -39,6 +39,8 @@ if __name__ == '__main__':
                     command_args = ['--config', f'runs/config_{task}.yaml', 
                         '--seed_everything', str(seed), 
                         # '--trainer.logger', 'null',
+                        # '--trainer.max_epochs', '1',
+                        '--trainer.logger.init_args.project', 'normalization',
                         '--trainer.logger.init_args.name', experiment_name,
                         '--trainer.logger.init_args.id', wandb_id,
                         '--data.target_label', target,

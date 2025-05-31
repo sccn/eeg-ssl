@@ -9,14 +9,14 @@ import string
 
 if __name__ == '__main__':
     # for seed in set(range(20)) - set([3,4]):
-    for seed in [4]: #range(4):
+    for seed in [4]: #range(1, 5):
         print(f'seed: {seed}')
         # run system command with python subprocess
         # os.system(f'python main.py --seed {seed} --config runs/config_CPC.yaml')
         # generate a random 8 letter id string
         task = 'Regression'
-        recording_methods = ['None', 'all', 'channel_wise']
-        window_methods = ['None', 'all', 'channel_wise']
+        recording_methods = ['all', 'channel_wise', 'None']  
+        window_methods = ['all', 'channel_wise', 'None']
         target_label = ['age']
         for target in target_label:
             for recording_norm in recording_methods:
@@ -26,6 +26,7 @@ if __name__ == '__main__':
                     experiment_name = target
                     experiment_name += f'-recording_norm_{recording_norm}'
                     experiment_name += f'-window_norm_{window_norm}'
+                    experiment_name += f'-EEGNet' # TODO
                     experiment_name += f'-seed_{seed}'
                     
                     if recording_norm == 'None':
@@ -34,15 +35,16 @@ if __name__ == '__main__':
                         cache_dir = 'data-no_cz-robust_scaled'
                     elif recording_norm == 'channel_wise':
                         cache_dir = 'data-hp_0.1-robust_recording_channelwise'
-                    
 
                     command_args = ['--config', f'runs/config_{task}.yaml', 
                         '--seed_everything', str(seed), 
                         # '--trainer.logger', 'null',
+                        '--trainer.logger.init_args.project', 'normalization',
                         '--trainer.logger.init_args.name', experiment_name,
                         '--trainer.logger.init_args.id', wandb_id,
                         '--data.target_label', target,
                         '--data.cache_dir', cache_dir,
+                        '--data.val_release', 'ds005510',
                         '--model.seed', str(seed),
                         '--model.init_args.window_norm', window_norm]
 

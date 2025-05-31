@@ -45,16 +45,16 @@ trainer:
     class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
       monitor: val_Classifier/accuracy
-      mode: min
-      save_top_k: 2
-      save_last: true
-      save_on_train_epoch_end: true
-      auto_insert_metric_name: true
-      filename: "{epoch:03d}-{val_Classifier:.3f}"
+      mode: max
+      save_top_k: 1
+  #     filename: "{epoch:03d}-{val_Classifier/accuracy:.3f}"
+  #     auto_insert_metric_name: true
+      # save_last: true
+      # save_on_train_epoch_end: true
   #     save_weights_only: false
   #     # every_n_train_steps: 50
   fast_dev_run: false
-  max_epochs: 5
+  max_epochs: 3
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -92,13 +92,14 @@ model:
     # encoder_path: braindecode.models.EEGNetv4
     encoder_kwargs:
       n_outputs: 2
-      n_chans: 129
+      n_chans: 128
       n_times: 500
       # activation: torch.nn.ELU
       activation_first_conv_nonlin: torch.nn.ELU
       activation_later_conv_nonlin: torch.nn.ELU
     learning_rate: 0.002
     seed: 3
+    window_norm: 'channel_wise'
 data:
   ssl_task:
       class_path: libs.ssl_task.Classification
