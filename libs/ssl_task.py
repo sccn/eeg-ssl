@@ -575,6 +575,7 @@ class CPC(SSLTask):
                 negatives_batch = torch.gather(negatives_batch.unsqueeze(2).expand(-1, -1, self.num_negatives, -1),  # Expand to (B, seq_len, num_negative, F)
                                         dim=1,  # Sample along the time dimension (originally dimension 1)
                                         index=negatives_inds.unsqueeze(-1).expand(-1, -1, -1, feat))
+                # so here, all negatives for each batch item are sampled from the same recording, but not the same recording as the positive's
 
             # negatives_batch, negatives_seq_ind = self._generate_negatives_from_batch(true_z)
             negatives = F.cosine_similarity(c.unsqueeze(-2), negatives_batch, dim=-1) / self.temp # (B, seq_len, num_negatives)
@@ -652,6 +653,8 @@ class CPC(SSLTask):
             X = self.remove_chan(X)
             X = self.normalize_data(X)
             z = self.encoder(X)
+            if z.ndim == 2:
+                z = z.unsqueeze(-1)
             batch_size, feat, samples = z.shape
             # z - (B, F, seq_len)
 
@@ -685,6 +688,8 @@ class CPC(SSLTask):
             X = self.remove_chan(X)
             X = self.normalize_data(X)
             z = self.encoder(X)
+            if z.ndim == 2:
+                z = z.unsqueeze(-1)
             batch_size, feat, samples = z.shape
             Y, subjects = batch[1], batch[3]
             # z - (B, F, seq_len)
@@ -711,16 +716,28 @@ class CPC(SSLTask):
                 evaluator((c_last, Y, subjects))
         
         def test_step(self, batch, batch_idx):
-            z = self.encoder(batch[0])
+            X = batch[0]
+            X = self.remove_chan(X)
+            X = self.normalize_data(X)
+            z = self.encoder(X)
             batch_size, feat, samples = z.shape
             Y, subjects = batch[1], batch[3]
             # z - (B, F, seq_len)
 
             unmasked_z = z.clone()
             
+            mask = None
+            # mask = self._make_mask((batch_size, samples), self.mask_rate, samples, self.mask_span)
+            # make simple mask: only predict the last token
+            # mask = torch.zeros((batch_size, samples), dtype=torch.bool)
+            # mask[:, -1] = True
+
+            if mask is not None:
+                z.transpose(2, 1)[mask] = self.mask_replacement
+
             c = self.contextualizer(z)
             
-            loss = self.compute_contrastive_loss(unmasked_z, c)
+            loss = self.compute_contrastive_loss(unmasked_z, c, mask)
 
             self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
@@ -1010,6 +1027,31 @@ class Regression(SSLTask):
 
             # log metrics
             for k, v in scores.items():
+                # self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
+                self.log(f'test_Regressor/{k}', v, prog_bar=True, logger=True)
+            for metric, fcn in zip(self.metrics, self.metric_fcns):
+                scores[f"subject_with_mean_{metric}"] = fcn(subject_mean_preds, subject_labels)
+                scores[f"subject_with_median_{metric}"] = fcn(subject_median_preds, subject_labels)
+            
+            scores['subject_iqr_mean'] = subject_iqrs.mean()
+            scores['subject_iqr_median'] = subject_iqrs.median()
+            scores['subject_std_mean'] = subject_stds.mean()
+            scores['subject_std_median'] = subject_stds.median()
+
+            # log metrics
+            for k, v in scores.items():
+                self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
+            for metric, fcn in zip(self.metrics, self.metric_fcns):
+                scores[f"subject_with_mean_{metric}"] = fcn(subject_mean_preds, subject_labels)
+                scores[f"subject_with_median_{metric}"] = fcn(subject_median_preds, subject_labels)
+            
+            scores['subject_iqr_mean'] = subject_iqrs.mean()
+            scores['subject_iqr_median'] = subject_iqrs.median()
+            scores['subject_std_mean'] = subject_stds.mean()
+            scores['subject_std_median'] = subject_stds.median()
+
+            # log metrics
+            for k, v in scores.items():
                 self.log(f'val_Regressor/{k}', v, prog_bar=True, logger=True)
 
         
@@ -1036,6 +1078,7 @@ class Classification(SSLTask):
             super().__init__(*args, **kwargs)
             self.task = task
             self.num_classes = num_classes
+            self.evaluators = []
 
         def embed(self, x):
             x = self.encoder(x)
@@ -1055,7 +1098,11 @@ class Classification(SSLTask):
             self.log('train_accuracy', accuracy(preds, Y, task=self.task, num_classes=self.num_classes), on_step=True, on_epoch=True, prog_bar=True, logger=True)
             self.log('train_f1', f1_score(preds, Y, task=self.task, num_classes=self.num_classes), on_step=True, on_epoch=True, prog_bar=True, logger=True)
             return loss
-        
+
+        def on_validation_epoch_start(self):
+            # reset subject data
+            self.subject_data = defaultdict(lambda: defaultdict(list)) # {subject: {'preds': [], 'labels': []} dictionary
+
         def validation_step(self, batch, batch_idx):
             X, Y = batch[0], batch[1]
             X = self.remove_chan(X)
@@ -1069,5 +1116,49 @@ class Classification(SSLTask):
             self.log('val_Classifier/accuracy', accuracy(preds, Y, task=self.task, num_classes=self.num_classes), on_epoch=True, prog_bar=True, logger=True)
             self.log('val_Classifier/f1', f1_score(preds, Y, task=self.task, num_classes=self.num_classes), on_epoch=True, prog_bar=True, logger=True)
 
+            # collect subject data
+            subjects = batch[3]
+            for i, subj in enumerate(subjects):
+                self.subject_data[subj]['preds'].append(preds[i])
+                self.subject_data[subj]['labels'].append(Y[i]) 
+
         def on_validation_epoch_end(self):
-            pass
+            # compute subject level metrics
+            # aggregate
+            subject_labels, subject_preds = [], []
+
+            for subj, data in self.subject_data.items():
+                preds, labels = torch.stack(data['preds']), torch.stack(data['labels'])
+                assert labels.unique().numel() == 1, f"Labels for subject {subj} should be the same"
+
+                subject_labels.append(labels[0]) # unique label for the subject
+
+                # majority voting for preds. The class with the highest count is chosen
+                preds = torch.mode(preds, dim=0).values
+                subject_preds.append(preds)
+
+            # stack all list of tensors
+            subject_labels = torch.stack(subject_labels)
+            subject_preds = torch.stack(subject_preds)
+
+            # compute metrics
+            scores = {}
+            scores["subject_accuracy"] = accuracy(subject_preds, subject_labels, task=self.task, num_classes=self.num_classes)
+            scores["subject_f1"] = f1_score(subject_preds, subject_labels, task=self.task, num_classes=self.num_classes)
+            
+            # log metrics
+            for k, v in scores.items():
+                self.log(f'val_Classifier/{k}', v, prog_bar=True, logger=True)
+
+        def test_step(self, batch, batch_idx):
+            X, Y = batch[0], batch[1]
+            X = self.remove_chan(X)
+            X = self.normalize_data(X)
+            Z = self.encoder(X).squeeze()
+            Y = Y.to(torch.long)
+
+            loss = nn.functional.cross_entropy(Z, Y)
+            _, preds = Z.max(1)
+            self.log("test_Classifier/loss", loss, on_epoch=True, prog_bar=True, logger=True)
+            self.log('test_Classifier/accuracy', accuracy(preds, Y, task=self.task, num_classes=self.num_classes), on_epoch=True, prog_bar=True, logger=True)
+            self.log('test_Classifier/f1', f1_score(preds, Y, task=self.task, num_classes=self.num_classes), on_epoch=True, prog_bar=True, logger=True)

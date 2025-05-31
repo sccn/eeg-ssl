@@ -680,13 +680,14 @@ class BENDRContextualizer(nn.Module):
 class BENDRLSTM(nn.Module):
 
     def __init__(self, in_features,
+                hidden_size=512,
                  position_encoder=25,):
         super().__init__()
 
 
         self.contextualizer = torch.nn.LSTM(
             input_size=in_features,
-            hidden_size=512,
+            hidden_size=hidden_size,
             num_layers=3,
             batch_first=True,
             bidirectional=False,
